@@ -89,6 +89,8 @@ export interface ReleasedTask {
   poolId: string;
   runId?: string;
   releasedAt: string;
+  // The wake is retried once if no run shows up (C3).
+  wakeRetried?: boolean;
 }
 
 export interface OpenTask {
