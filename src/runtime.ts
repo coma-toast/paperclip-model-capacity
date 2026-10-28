@@ -1,11 +1,13 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
+import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { createExecutor } from "./executor.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, createAgentCache, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
+import type { AlertEvent } from "./types.js";
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -22,11 +24,14 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const store = createStore(ctx.state);
   const agents = createAgentCache(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
-  const queueLabelId = async (companyId: string) => {
-    const label = (await ctx.config.get(companyId)).queueLabelId;
-    return typeof label === "string" && label ? label : undefined;
+  const configId = async (companyId: string, key: string) => {
+    const value = (await ctx.config.get(companyId))[key];
+    return typeof value === "string" && value ? value : undefined;
   };
-  const executor = createExecutor({ ctx, store, queueLabelId });
+  const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
+  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId") });
+  const pluginError = (state: "start" | "clear", message: string): AlertEvent =>
+    ({ kind: "pluginError", subject: "cycle", state, message, at: now().toISOString() });
   let chain: Promise<void> = Promise.resolve();
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let probeTimer: ReturnType<typeof setInterval> | undefined;
@@ -41,12 +46,17 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };
-        await executor.execute(decide(snapshot, now()), snapshot);
+        const actions = decide(snapshot, now());
+        await executor.execute(actions, snapshot);
+        const alerts = actions.flatMap((a) => (a.kind === "alert" ? [a.alert] : []));
+        await alerter.sync(LEVEL_KINDS, alerts, now().toISOString());
         lastCycleAt = now().toISOString();
+        if (lastError) await alerter.apply([pluginError("clear", "Capacity cycles are running again")]);
         lastError = undefined;
       } catch (e) {
         lastError = errText(e);
         ctx.logger.warn("Model capacity cycle failed", { reason, error: lastError });
+        await alerter.apply([pluginError("start", "A capacity cycle failed; see the plugin logs")]).catch(() => undefined);
       }
     });
     return chain;
@@ -64,6 +74,12 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), now });
       await store.hosts.set(statuses);
       for (const change of changes) ctx.logger.info("Model capacity host changed", { hostId: change.hostId, up: change.up });
+      const names = new Map(pools.flatMap((p) => p.hosts.map((h) => [h.id, { host: h.name, pool: p.id }] as const)));
+      // Host down opens an alert and coming back up clears it (G1: host down/up).
+      await alerter.apply(changes.map((c) => ({
+        kind: "hostDown" as const, subject: c.hostId, state: c.up ? ("clear" as const) : ("start" as const), poolId: names.get(c.hostId)?.pool,
+        message: `${names.get(c.hostId)?.host ?? c.hostId} is ${c.up ? "back up" : "not answering health checks"}`, at: now().toISOString(),
+      })));
       if (changes.length) schedule("host change");
     } catch (e) {
       ctx.logger.warn("Model capacity probe tick failed", { error: errText(e) });

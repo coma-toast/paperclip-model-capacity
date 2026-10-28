@@ -1,7 +1,7 @@
 import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
 import { HISTORY_MAX_PER_DAY, STATE_SCHEMA_VERSION } from "../constants.js";
-import type { Action, HeldTask, HostStatus, OverrideRecord, PoolConfig, ReleasedTask } from "../types.js";
+import type { Action, AlertEvent, HeldTask, HostStatus, OverrideRecord, PoolConfig, ReleasedTask } from "../types.js";
 
 export interface HistoryEntry {
   at: string;
@@ -14,6 +14,12 @@ export interface HistoryEntry {
 export interface Exemptions {
   agentIds: string[];
   issueIds: string[];
+}
+
+// Open alerts by dedupe key (G3) and the latest start/clear events for the UI.
+export interface AlertState {
+  active: Record<string, AlertEvent>;
+  recent: AlertEvent[];
 }
 
 // Migrations step a blob from version N to N + 1. Version 0 means a blob written before versioning existed.
@@ -101,6 +107,7 @@ export const createStore = (state: PluginStateClient) => {
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
     heldPools: blob<string[]>(state, instanceKey("heldPools"), () => []),
     exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
+    alerts: blob<AlertState>(state, instanceKey("alerts"), () => ({ active: {}, recent: [] })),
     queueBlockers: (companyId: string) => blob<Record<string, string>>(state, companyKey(companyId, "queueBlockers"), () => ({})),
     historyDays: () => historyIndex.get(),
     history: (day: string) => blob<HistoryEntry[]>(state, historyKey(day), () => []).get(),
