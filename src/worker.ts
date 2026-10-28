@@ -1,26 +1,36 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
+import manifest from "./manifest.js";
+import { createRuntime, type Runtime } from "./runtime.js";
+
+const CONFIG_KEYS = Object.keys(manifest.instanceConfigSchema?.properties ?? {});
+let runtime: Runtime | undefined;
+
 const plugin = definePlugin({
   async setup(ctx) {
-    ctx.events.on("issue.created", async (event) => {
-      const issueId = event.entityId ?? "unknown";
-      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, stateKey: "seen" }, true);
-      ctx.logger.info("Observed issue.created", { issueId });
-    });
-
-    ctx.data.register("health", async () => {
-      return { status: "ok", checkedAt: new Date().toISOString() };
-    });
-
-    ctx.actions.register("ping", async () => {
-      ctx.logger.info("Ping action invoked");
-      return { pong: true, at: new Date().toISOString() };
-    });
+    runtime = createRuntime(ctx);
+    runtime.start();
+    ctx.data.register("health", async () => ({ status: "ok", ...runtime?.health(), checkedAt: new Date().toISOString() }));
   },
 
   async onHealth() {
-    return { status: "ok", message: "Plugin worker is running" };
-  }
+    const h = runtime?.health();
+    if (h?.lastError) return { status: "degraded", message: `Last cycle failed: ${h.lastError}` };
+    return { status: "ok", message: h?.lastCycleAt ? `Last cycle ${h.lastCycleAt}` : "Waiting for the first cycle" };
+  },
+
+  async onValidateConfig(config) {
+    const errors: string[] = [];
+    for (const [key, value] of Object.entries(config)) {
+      if (!CONFIG_KEYS.includes(key)) errors.push(`${key}: unknown setting`);
+      else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
+    }
+    return errors.length ? { ok: false, errors } : { ok: true };
+  },
+
+  async onShutdown() {
+    await runtime?.stop();
+  },
 });
 
 export default plugin;
