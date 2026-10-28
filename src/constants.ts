@@ -16,6 +16,7 @@ export const RUN_EVENT_DEBOUNCE_MS = 2_000;
 export const AGENT_CACHE_TTL_MS = 60_000;
 export const HISTORY_RETENTION_DAYS = 30;
 export const HISTORY_MAX_PER_DAY = 1_000;
+export const RECENT_ALERTS_MAX = 200;
 
 export const DEFAULT_ALERT_AFTER_MINUTES = 30;
 
