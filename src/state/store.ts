@@ -10,6 +10,12 @@ export interface HistoryEntry {
   action: Action;
 }
 
+// Agents and tasks an operator exempted (F4).
+export interface Exemptions {
+  agentIds: string[];
+  issueIds: string[];
+}
+
 // Migrations step a blob from version N to N + 1. Version 0 means a blob written before versioning existed.
 export type Migrations = Readonly<Record<number, (data: unknown) => unknown>>;
 
@@ -94,6 +100,7 @@ export const createStore = (state: PluginStateClient) => {
     released: blob<Record<string, ReleasedTask>>(state, instanceKey("released"), () => ({})),
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
     heldPools: blob<string[]>(state, instanceKey("heldPools"), () => []),
+    exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
     queueBlockers: (companyId: string) => blob<Record<string, string>>(state, companyKey(companyId, "queueBlockers"), () => ({})),
     historyDays: () => historyIndex.get(),
     history: (day: string) => blob<HistoryEntry[]>(state, historyKey(day), () => []).get(),
