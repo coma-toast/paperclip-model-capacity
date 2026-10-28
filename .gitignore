@@ -2,3 +2,4 @@ node_modules
 dist
 coverage
 .paperclip-sdk
+scripts/spike/dist

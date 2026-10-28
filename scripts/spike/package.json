@@ -1,0 +1,8 @@
+{
+  "name": "@coma-toast/paperclip-model-capacity-spike",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "description": "Throwaway spike plugin: checks host behaviors the model-capacity plugin depends on",
+  "paperclipPlugin": { "manifest": "./dist/manifest.js", "worker": "./dist/worker.js" }
+}
