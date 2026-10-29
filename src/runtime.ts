@@ -38,7 +38,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     return typeof value === "string" && value ? value : undefined;
   };
   const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
-  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId") });
+  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId"), listCompanies: () => companies.list() });
   const pluginError = (state: "start" | "clear", message: string): AlertEvent =>
     ({ kind: "pluginError", subject: "cycle", state, message, at: now().toISOString() });
   let chain: Promise<void> = Promise.resolve();
