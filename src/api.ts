@@ -3,6 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
+import { inferApi, type ApiKind } from "./apis.js";
 import { summarizeAuth } from "./auth.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
@@ -15,6 +16,7 @@ export interface PoolSummary {
   companyId?: string;
   localId?: string;
   name: string;
+  api: ApiKind;
   mode: PoolConfig["mode"];
   privacy: PoolConfig["privacy"];
   limit: number;
@@ -73,7 +75,7 @@ export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Dat
     const holds = snapshot.holds.filter((h) => h.poolId === pool.id);
     const oldest = holds.reduce<string | undefined>((min, h) => (!min || h.heldAt < min ? h.heldAt : min), undefined);
     return {
-      id: pool.id, companyId: pool.companyId, localId: pool.localId, name: pool.name, mode: pool.mode, privacy: pool.privacy, limit: pool.limit,
+      id: pool.id, companyId: pool.companyId, localId: pool.localId, name: pool.name, api: pool.api ?? inferApi(pool.patterns), mode: pool.mode, privacy: pool.privacy, limit: pool.limit,
       available: availableCapacity(pool, snapshot, runs), inUse: runs + pending, queued: holds.length,
       oldestWaitSeconds: oldest ? Math.max(0, Math.round((now.getTime() - Date.parse(oldest)) / 1000)) : null,
       onHold: snapshot.heldPools.includes(pool.id), openAlerts: openAlertPools.filter((p) => p === pool.id).length,

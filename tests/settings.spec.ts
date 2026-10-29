@@ -158,3 +158,23 @@ describe("board actions and data handlers", () => {
     expect((await harness.getData<{ pools: PoolSummary[] }>("capacity-summary", { companyId: "c2" })).pools).toEqual([]);
   });
 });
+
+describe("pools are demarcated by API", () => {
+  it("infers the API of a pool saved before APIs existed", () => {
+    const r = validatePools([raw("vm", { patterns: ["litellm/vm", "litellm/pc-omo-local-*"] }), raw("direct", { patterns: ["opencode/*-free"] }), raw("bare", { patterns: ["claude-sonnet-5-5"] })]);
+    expect(r.ok && r.pools.map((p) => p.api)).toEqual(["litellm", "opencode", "other"]);
+  });
+
+  it("rejects a model from another API in a pool", () => {
+    expect(validatePools([raw("vm", { api: "litellm", patterns: ["litellm/vm", "opencode/x-free"] })])).toEqual({
+      ok: false, errors: [{ field: "pools[0].patterns", message: "A LiteLLM pool only covers litellm/… models; move opencode/x-free to a pool for its API" }],
+    });
+  });
+
+  it("rejects backends on a cloud API and an unknown API", () => {
+    const host = { id: "h", name: "h", engine: "openai", baseUrl: "http://h" };
+    expect(fields([raw("or", { api: "openrouter", patterns: ["openrouter/*"], hosts: [host] })])).toEqual(["pools[0].hosts"]);
+    expect(fields([raw("x", { api: "bedrock" })])).toEqual(["pools[0].api"]);
+    expect(fields([raw("own", { api: "other", patterns: ["strata:fast"], hosts: [host] })])).toEqual([]);
+  });
+});

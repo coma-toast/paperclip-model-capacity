@@ -1,5 +1,7 @@
 import type { Issue } from "@paperclipai/plugin-sdk";
 
+import type { ApiKind } from "./apis.js";
+
 // The SDK doesn't re-export the shared type, and the shared package isn't a direct dependency.
 export type IssueAssigneeAdapterOverrides = NonNullable<Issue["assigneeAdapterOverrides"]>;
 
@@ -34,6 +36,8 @@ export interface CompanyFilter {
 export interface PoolConfig {
   id: string;
   name: string;
+  // The model API this pool covers (apis.ts); every pattern starts with its prefix.
+  api?: ApiKind;
   patterns: string[];
   limit: number;
   privacy: PoolPrivacy;
