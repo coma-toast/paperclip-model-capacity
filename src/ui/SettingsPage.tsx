@@ -154,14 +154,32 @@ const CredentialInput = ({ value, credentials, onChange }: { value?: string; cre
 );
 
 // "Load models": lists what the pool's API offers; ticking a model adds it to the pool (exact name), unticking removes it.
-const ModelPicker = ({ pool, api, prefix, companyId, uses, onChange }: { pool: PoolConfig; api: ApiInfo; prefix: string; companyId: string; uses: AgentModelUse[]; onChange: (p: Partial<PoolConfig>) => void }) => {
+// The pool's models are picked from the list its endpoint returns (plus models already in the pool and the agents'
+// models with this prefix); nothing is typed. A model already in another pool can't be ticked, so no model is in two.
+interface PickerRow {
+  id: string;
+  full: string;
+  onEndpoint: boolean;
+  agents: number;
+  otherPool?: string;
+}
+
+const isWildcard = (pattern: string) => /[*?]/.test(pattern);
+
+const ModelPicker = ({ pool, api, prefix, companyId, uses, otherPools, error, onChange }: {
+  pool: PoolConfig; api: ApiInfo; prefix: string; companyId: string; uses: AgentModelUse[]; otherPools: PoolConfig[]; error?: string; onChange: (p: Partial<PoolConfig>) => void;
+}) => {
   const list = usePluginAction("list-api-models");
   const [models, setModels] = useState<string[] | null>(null);
   const [source, setSource] = useState("");
   const [problem, setProblem] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("");
+  const [selectedOnly, setSelectedOnly] = useState(false);
+  const [expanded, setExpanded] = useState<string>();
+  const loadKey = `${api.kind}|${pool.endpoint?.baseUrl ?? ""}|${pool.endpoint?.credential ?? ""}`;
   const load = async () => {
+    if (api.listing === "none") return setModels([]);
     setLoading(true);
     setProblem(undefined);
     const r = (await list({ companyId, pool: { api: api.kind, patterns: pool.patterns, endpoint: pool.endpoint } }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string };
@@ -169,46 +187,77 @@ const ModelPicker = ({ pool, api, prefix, companyId, uses, onChange }: { pool: P
     if (r.ok) {
       setModels(r.models ?? []);
       setSource(r.source ?? "");
-    } else setProblem(r.error ?? "Couldn't load models");
+    } else {
+      setModels([]);
+      setProblem(r.error ?? "Couldn't load models");
+    }
   };
-  const lines = pool.patterns.filter((p) => p.trim());
-  const full = (id: string) => addPrefix(prefix, id);
-  const toggle = (id: string) => {
-    const name = full(id);
-    onChange({ patterns: lines.includes(name) ? lines.filter((p) => p !== name) : [...lines, name] });
-  };
-  const shown = (models ?? []).filter((m) => m.toLowerCase().includes(filter.toLowerCase()));
-  if (api.listing === "none") return null;
+  useEffect(() => {
+    void load();
+  }, [loadKey]);
+
+  const selected = pool.patterns.map((p) => p.trim()).filter(Boolean);
+  const candidates = [...new Set([
+    ...(models ?? []).map((id) => addPrefix(prefix, id)),
+    ...uses.filter((u) => u.prefix === prefix).map((u) => u.model),
+    ...selected.filter((p) => !isWildcard(p)),
+  ])];
+  // Wildcard lines from before are replaced, once, by the models they match today.
+  useEffect(() => {
+    if (models === null) return;
+    const wild = selected.filter(isWildcard);
+    if (!wild.length) return;
+    const matched = candidates.filter((m) => wild.some((w) => patternMatches(w, m)));
+    onChange({ patterns: [...new Set([...selected.filter((p) => !isWildcard(p)), ...matched])] });
+    setExpanded(`Replaced ${wild.join(", ")} with the ${matched.length} model${matched.length === 1 ? "" : "s"} ${wild.length === 1 ? "it matches" : "they match"} now.`);
+  }, [models]);
+
+  const endpointSet = new Set((models ?? []).map((id) => addPrefix(prefix, id)));
+  const rows: PickerRow[] = candidates.map((full) => ({
+    id: stripPrefix(prefix, full), full, onEndpoint: endpointSet.has(full),
+    agents: uses.find((u) => u.model === full)?.agents.length ?? 0,
+    otherPool: otherPools.find((p) => p.patterns.some((pt) => pt.trim() && patternMatches(pt.trim(), full)))?.name,
+  })).sort((a, b) => Number(selected.includes(b.full)) - Number(selected.includes(a.full)) || b.agents - a.agents || a.id.localeCompare(b.id));
+  const shown = rows.filter((r) => r.id.toLowerCase().includes(filter.toLowerCase()) && (!selectedOnly || selected.includes(r.full)));
+  const toggle = (full: string) => onChange({ patterns: selected.includes(full) ? selected.filter((p) => p !== full) : [...selected, full] });
+  const cols = "28px minmax(0, 1fr) 90px 150px";
+
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <Button onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : models ? "Reload models" : `Load models from ${api.label}`}</Button>
-        {models ? <Button onClick={() => setModels(null)}>Hide list</Button> : null}
-        {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
+        <input style={{ ...inputStyle, maxWidth: 240 }} placeholder={`Filter ${rows.length} models`} value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={selectedOnly} onChange={(e) => setSelectedOnly(e.target.checked)} /> In pool only
+        </label>
+        <span style={{ flex: 1 }} />
+        <span style={MUTED}>{selected.filter((p) => !isWildcard(p)).length} in pool</span>
+        {api.listing !== "none" ? <Button onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : "Reload"}</Button> : null}
       </div>
-      {models ? (
-        <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 10, display: "grid", gap: 6 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input style={{ ...inputStyle, maxWidth: 280 }} placeholder="Filter models" value={filter} onChange={(e) => setFilter(e.target.value)} />
-            <span style={MUTED}>{shown.length} of {models.length} from {source}</span>
-          </div>
-          <div style={{ maxHeight: 240, overflowY: "auto", display: "grid", gap: 2 }}>
-            {shown.map((id) => {
-              const exact = lines.includes(full(id));
-              const covered = !exact && lines.some((p) => patternMatches(p, full(id)));
-              return (
-                <label key={id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
-                  <input type="checkbox" checked={exact || covered} disabled={covered} onChange={() => toggle(id)} />
-                  <code>{id}</code>
-                  {(() => { const n = uses.find((u) => u.model === full(id))?.agents.length; return n ? <Pill tone="info">used by {n} agent{n === 1 ? "" : "s"}</Pill> : null; })()}
-                  {covered ? <span style={MUTED}>already covered by a wildcard line</span> : null}
-                </label>
-              );
-            })}
-            {shown.length === 0 ? <span style={MUTED}>No models match.</span> : null}
-          </div>
+      {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem} Showing models already in the pool and your agents' models.</span> : null}
+      {expanded ? <span style={{ ...MUTED, color: "#eab308" }}>{expanded} Save to keep it.</span> : null}
+      {error ? <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span> : null}
+      <div style={{ border: "1px solid rgba(128,128,128,0.45)", borderRadius: 8, fontSize: 13, maxHeight: 280, overflowY: "auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "6px 10px", position: "sticky", top: 0, background: "rgba(128,128,128,0.12)", backdropFilter: "blur(6px)" }}>
+          <span /><span style={MUTED}>{prefix ? `Model (after ${prefix})` : "Model"}</span><span style={MUTED}>Agents</span><span style={MUTED}>Note</span>
         </div>
-      ) : null}
+        {shown.map((r) => {
+          const inPool = selected.includes(r.full);
+          const blocked = !inPool && Boolean(r.otherPool);
+          return (
+            <label key={r.full} style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "5px 10px", alignItems: "center", cursor: blocked ? "default" : "pointer", opacity: blocked ? 0.55 : 1 }}>
+              <input type="checkbox" checked={inPool} disabled={blocked} onChange={() => toggle(r.full)} />
+              <code style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r.id}</code>
+              <span style={MUTED}>{r.agents ? `${r.agents} agent${r.agents === 1 ? "" : "s"}` : "none"}</span>
+              <span style={{ ...MUTED, color: !r.onEndpoint && models && api.listing !== "none" ? "#eab308" : undefined }}>
+                {blocked ? `in ${r.otherPool}` : !r.onEndpoint && models?.length && api.listing !== "none" ? "not on endpoint" : ""}
+              </span>
+            </label>
+          );
+        })}
+        {loading && !rows.length ? <div style={{ padding: 10, ...MUTED }}>Loading models…</div> : null}
+        {!loading && !shown.length ? <div style={{ padding: 10, ...MUTED }}>{rows.length ? "No models match." : api.listing === "none" ? "No agents use a model with this prefix yet." : "The endpoint returned no models."}</div> : null}
+      </div>
+      {source ? <span style={MUTED}>From {source}.</span> : null}
     </div>
   );
 };
@@ -254,8 +303,8 @@ const HostRow = ({ host, poolId, companyId, credentials, error, onChange, onRemo
   );
 };
 
-const PoolCard = ({ pool, companyId, credentials, uses, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; companyId: string; credentials: CredentialSummary[]; uses: AgentModelUse[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+const PoolCard = ({ pool, companyId, credentials, uses, otherPools, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; credentials: CredentialSummary[]; uses: AgentModelUse[]; otherPools: PoolConfig[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
@@ -323,12 +372,10 @@ const PoolCard = ({ pool, companyId, credentials, uses, index, errorsFor, onChan
         </div>
       ) : null}
 
-      <Field label={prefix ? `Models in this pool (after ${prefix})` : "Models in this pool (full names)"} error={err("patterns")}
-        hint={`One per line${prefix ? `, without the ${prefix} prefix` : ", exactly as agents name them"}. A task counts here when its model matches a line (* matches anything, ? one character). This only matches names; it changes nothing in the API.`}>
-        <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(prefix, p)).join("\n")}
-          onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(prefix, line) : line)) })} />
-      </Field>
-      <ModelPicker pool={pool} api={api} prefix={prefix} companyId={companyId} uses={uses} onChange={onChange} />
+      <div style={{ display: "grid", gap: 6 }}>
+        <SectionTitle title="Models in this pool" hint="Tick the models this pool covers. A task counts here when its model is one of them. This changes nothing in the API." />
+        <ModelPicker pool={pool} api={api} prefix={prefix} companyId={companyId} uses={uses} otherPools={otherPools} error={err("patterns")} onChange={onChange} />
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mode" error={err("mode")}>
@@ -381,7 +428,8 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   if (!companyId) return <div style={{ padding: 16 }}>Pools are set per company: open a company's settings, then Model capacity.</div>;
   if (!pools) return <Spinner />;
   const dirty = JSON.stringify(cleaned(pools)) !== saved;
-  const update = (i: number, patch: Partial<PoolConfig>) => setPools(pools.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+  // Functional update: several pool cards can change in the same render (e.g. wildcard expansion on load).
+  const update = (i: number, patch: Partial<PoolConfig>) => setPools((prev) => (prev ?? []).map((p, j) => (j === i ? { ...p, ...patch } : p)));
   const errorsFor = (path: string) => errors.find((e) => e.field === path)?.message;
   // Errors for fields shown on a card appear under the field; the rest (overflow, company lists, unknown keys) go on top.
   const unplaced = errors.filter((e) => !PLACED.test(e.field));
@@ -429,7 +477,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
         onNewPool={(group) => setPools([...pools, poolFromAgents(group, pools)])} />
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Start one from your agents' models above, or add one.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} credentials={config.data?.credentials ?? []} uses={agentModels.data?.uses ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} credentials={config.data?.credentials ?? []} uses={agentModels.data?.uses ?? []} otherPools={pools.filter((_, j) => j !== i)} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>

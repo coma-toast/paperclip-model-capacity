@@ -8,7 +8,7 @@ import { createRuntime, type Runtime } from "../src/runtime.js";
 import { validatePools } from "../src/settings.js";
 import { NOW, minutesAgo } from "./fixtures/snapshot.js";
 
-const raw = (id: string, over: Record<string, unknown> = {}) => ({ id, name: id, patterns: [`${id}/*`], limit: 1, privacy: "shared", ...over });
+const raw = (id: string, over: Record<string, unknown> = {}) => ({ id, name: id, patterns: [`${id}/m`], limit: 1, privacy: "shared", ...over });
 // Valid pools for seeding state; throws if the fixture itself is invalid.
 const pools = (...input: unknown[]) => {
   const r = validatePools(input);
@@ -160,8 +160,13 @@ describe("board actions and data handlers", () => {
 });
 
 describe("pools are demarcated by API", () => {
+  it("only takes exact model names picked from the list, no wildcards", () => {
+    expect(validatePools([raw("p", { patterns: ["p/a-*"] })])).toEqual({ ok: false, errors: [{ field: "pools[0].patterns", message: "Pick models from the list; wildcards aren't used" }] });
+    expect(fields([raw("p", { patterns: [] })])).toEqual(["pools[0].patterns"]);
+  });
+
   it("infers the API of a pool saved before APIs existed", () => {
-    const r = validatePools([raw("vm", { patterns: ["litellm/vm", "litellm/pc-omo-local-*"] }), raw("direct", { patterns: ["opencode/*-free"] }), raw("bare", { patterns: ["claude-sonnet-5-5"] })]);
+    const r = validatePools([raw("vm", { patterns: ["litellm/vm", "litellm/local-a"] }), raw("direct", { patterns: ["opencode/x-free"] }), raw("bare", { patterns: ["claude-sonnet-5-5"] })]);
     expect(r.ok && r.pools.map((p) => p.api)).toEqual(["litellm", "opencode", "other"]);
   });
 
@@ -169,19 +174,19 @@ describe("pools are demarcated by API", () => {
     expect(validatePools([raw("p", { api: "litellm", patterns: ["litellm/a", "opencode/x-free"] })])).toEqual({
       ok: false, errors: [{ field: "pools[0].patterns", message: "This pool's models start with litellm/; opencode/x-free belongs in a pool for its own API" }],
     });
-    expect(fields([raw("p", { api: "ollama", prefix: "local/", patterns: ["local/qwen3:*"], endpoint: { baseUrl: "http://localhost:11434" } })])).toEqual([]);
+    expect(fields([raw("p", { api: "ollama", prefix: "local/", patterns: ["local/qwen3:8b"], endpoint: { baseUrl: "http://localhost:11434" } })])).toEqual([]);
   });
 
   it("needs a server address for a local engine, and no separate backends", () => {
     const host = { id: "h", name: "h", engine: "ollama", baseUrl: "http://h" };
-    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/*"] })])).toEqual(["pools[0].endpoint.baseUrl"]);
-    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/*"], endpoint: { baseUrl: "http://localhost:11434" }, hosts: [host] })])).toEqual(["pools[0].hosts"]);
-    expect(fields([raw("g", { api: "openai", patterns: ["*"], endpoint: { baseUrl: "ftp://x", slots: 0, extra: 1 } })])).toEqual(["pools[0].endpoint.extra", "pools[0].endpoint.baseUrl", "pools[0].endpoint.slots"]);
+    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/qwen3:8b"] })])).toEqual(["pools[0].endpoint.baseUrl"]);
+    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/qwen3:8b"], endpoint: { baseUrl: "http://localhost:11434" }, hosts: [host] })])).toEqual(["pools[0].hosts"]);
+    expect(fields([raw("g", { api: "openai", patterns: ["m"], endpoint: { baseUrl: "ftp://x", slots: 0, extra: 1 } })])).toEqual(["pools[0].endpoint.extra", "pools[0].endpoint.baseUrl", "pools[0].endpoint.slots"]);
   });
 
   it("rejects backends on a cloud API and an unknown API", () => {
     const host = { id: "h", name: "h", engine: "openai", baseUrl: "http://h" };
-    expect(fields([raw("or", { api: "openrouter", patterns: ["openrouter/*"], hosts: [host] })])).toEqual(["pools[0].hosts"]);
+    expect(fields([raw("or", { api: "openrouter", patterns: ["openrouter/m"], hosts: [host] })])).toEqual(["pools[0].hosts"]);
     expect(fields([raw("x", { api: "bedrock" })])).toEqual(["pools[0].api"]);
     expect(fields([raw("own", { api: "other", patterns: ["strata:fast"], hosts: [host] })])).toEqual([]);
   });

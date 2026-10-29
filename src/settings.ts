@@ -62,7 +62,8 @@ export const validatePools = (input: unknown): ValidationResult => {
     else if (names.has(String(raw.name).toLowerCase())) errors.push({ field: `${at}.name`, message: `Another pool is already named "${raw.name}"` });
     ids.add(String(raw.id).toLowerCase());
     names.add(String(raw.name).toLowerCase());
-    if (!isTextList(raw.patterns) || !(raw.patterns as string[]).length) errors.push({ field: `${at}.patterns`, message: "Needs at least one model pattern" });
+    if (!isTextList(raw.patterns) || !(raw.patterns as string[]).length) errors.push({ field: `${at}.patterns`, message: "Pick at least one model" });
+    else if ((raw.patterns as string[]).some((p) => /[*?]/.test(p))) errors.push({ field: `${at}.patterns`, message: "Pick models from the list; wildcards aren't used" });
     const api: ApiKind = raw.api === undefined ? inferApi(isTextList(raw.patterns) ? (raw.patterns as string[]) : []) : (raw.api as ApiKind);
     if (!APIS.some((a) => a.kind === api)) errors.push({ field: `${at}.api`, message: `Must be one of ${APIS.map((a) => a.kind).join(", ")}` });
     else {
