@@ -70,7 +70,10 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   ctx.data.register("capacity-summary", async () => {
     const snapshot = { ...(await currentSnapshot()), pools: await store.pools.get(), holds: Object.values(await store.holds.get()), heldPools: await store.heldPools.get() };
     const alerts = await store.alerts.get();
-    return { pools: summarize(snapshot, Object.values(alerts.active).flatMap((a) => (a.poolId ? [a.poolId] : [])), now()), lastCycleAt: runtime.health().lastCycleAt };
+    return {
+      pools: summarize(snapshot, Object.values(alerts.active).flatMap((a) => (a.poolId ? [a.poolId] : [])), now()),
+      lastCycleAt: runtime.health().lastCycleAt, lastError: runtime.health().lastError, diagnostics: runtime.snapshot()?.diagnostics,
+    };
   });
 
   ctx.data.register("queue", async (params) => {
