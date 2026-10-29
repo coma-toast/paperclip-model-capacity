@@ -1,13 +1,14 @@
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
-import { PRIORITY_RANK } from "./constants.js";
-import type { Runtime } from "./runtime.js";
-import { availableCapacity } from "./scheduler/decide.js";
+import { collectAgentModels } from "./agentModels.js";
 import { APIS, inferApi, type ApiKind } from "./apis.js";
 import { summarizeCredentials } from "./auth.js";
+import { PRIORITY_RANK } from "./constants.js";
 import { listApiModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
+import type { Runtime } from "./runtime.js";
+import { availableCapacity } from "./scheduler/decide.js";
 import { validatePools, type FieldError } from "./settings.js";
 import type { Action, AlertEvent, EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
 
@@ -142,6 +143,19 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const mine = (a: AlertEvent) => !companyId || !a.companyId || a.companyId === companyId;
     const { active, recent } = await store.alerts.get();
     return { active: Object.values(active).filter(mine), recent: recent.filter(mine).reverse() };
+  });
+
+  // Models this company's agents run (their default model), to set pools up from.
+  ctx.data.register("agent-models", async (params) => {
+    const companyId = companyOf(params);
+    if (!companyId) return { uses: [] };
+    const agents: Agent[] = [];
+    for (let offset = 0; ; offset += 200) {
+      const page = await ctx.agents.list({ companyId, limit: 200, offset });
+      agents.push(...page);
+      if (page.length < 200) break;
+    }
+    return { uses: collectAgentModels(agents) };
   });
 
   // The settings page edits one company's pools, with their own ids (not the scheduler's keys).

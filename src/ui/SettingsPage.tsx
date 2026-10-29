@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
+import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
 import { APIS, addPrefix, apiInfo, inferApi, poolPrefix, stripPrefix, type ApiInfo, type ApiKind } from "../apis.js";
 import type { CredentialSummary } from "../auth.js";
@@ -77,6 +78,65 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
   );
 };
 
+// Pools set up from what the agents already run: each agent's model, grouped by API prefix. Host-level provider
+// settings (addresses, keys in the server's env) aren't visible to plugins, so those are set on the pool once.
+const AgentModelsPanel = ({ uses, pools, onAdd, onNewPool }: {
+  uses: AgentModelUse[]; pools: PoolConfig[]; onAdd: (poolIndex: number, model: string) => void; onNewPool: (group: AgentModelUse[]) => void;
+}) => {
+  if (!uses.length) return null;
+  const coveredBy = (model: string) => pools.find((p) => p.patterns.some((pt) => pt.trim() && patternMatches(pt.trim(), model)));
+  const uncovered = uses.filter((u) => !coveredBy(u.model));
+  const groups = [...new Set(uncovered.map((u) => u.prefix))].map((prefix) => uncovered.filter((u) => u.prefix === prefix));
+  return (
+    <Card>
+      <SectionTitle title="Models your agents use" hint="From each agent's model setting in this company. Models not in any pool aren't limited. Add them to a pool, or start a pool from them. Paperclip doesn't share the server's own provider settings (addresses and keys in its environment) with plugins, so set a pool's address and credential once." />
+      <div style={{ display: "grid", gap: 4, fontSize: 13 }}>
+        {uses.map((u) => {
+          const pool = coveredBy(u.model);
+          const targets = pools.map((p, i) => ({ p, i })).filter(({ p }) => poolPrefix({ api: p.api ?? inferApi(p.patterns), prefix: p.prefix }) === u.prefix);
+          return (
+            <div key={u.model} style={{ display: "grid", gridTemplateColumns: "2.2fr 1fr 1.6fr", gap: 8, alignItems: "center" }}>
+              <code>{u.model}</code>
+              <span style={MUTED} title={u.agents.join(", ")}>{u.agents.length} agent{u.agents.length === 1 ? "" : "s"}</span>
+              {pool ? <span style={MUTED}>in {pool.name}</span> : (
+                <select style={inputStyle} value="" onChange={(e) => (e.target.value === "new" ? onNewPool([u]) : onAdd(Number(e.target.value), u.model))}>
+                  <option value="">Not in a pool: add to…</option>
+                  {targets.map(({ p, i }) => <option key={i} value={i}>{p.name}</option>)}
+                  <option value="new">New pool</option>
+                </select>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {groups.length ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {groups.map((g) => (
+            <Button key={g[0].prefix || "none"} onClick={() => onNewPool(g)}>
+              New {apiInfo(g[0].api).label} pool with {g.length} unpooled model{g.length === 1 ? "" : "s"}{g[0].prefix ? ` (${g[0].prefix}…)` : ""}
+            </Button>
+          ))}
+        </div>
+      ) : <span style={MUTED}>Every agent model is in a pool.</span>}
+    </Card>
+  );
+};
+
+// A pool started from agents' models: API from the prefix, the address an agent's config had (if any), observe mode.
+const poolFromAgents = (group: AgentModelUse[], taken: PoolConfig[]): PoolConfig => {
+  const first = group[0];
+  const info = apiInfo(first.api);
+  const base = (first.prefix.replace(/\/$/, "") || "models").replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  let id = base;
+  for (let n = 2; taken.some((p) => p.id === id); n++) id = `${base}-${n}`;
+  return {
+    id, name: `${info.label}${first.prefix ? ` (${first.prefix})` : ""}${id === base ? "" : ` ${id.slice(base.length + 1)}`}`,
+    api: first.api, prefix: first.prefix === info.defaultPrefix ? undefined : first.prefix,
+    endpoint: group.find((u) => u.baseUrl) ? { baseUrl: group.find((u) => u.baseUrl)!.baseUrl } : undefined,
+    patterns: group.map((u) => u.model), limit: 1, privacy: info.group === "cloud" ? "shared" : "private", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
+  };
+};
+
 // Where a credential name points: shown under an endpoint or backend so it's clear whether a key is sent.
 const CredentialNote = ({ name, credentials }: { name?: string; credentials: CredentialSummary[] }) => {
   if (!name) return <span style={MUTED}>No credential: requests are sent without a key. Add one in the plugin's config (Credential 1–4) and enter its name here.</span>;
@@ -94,7 +154,7 @@ const CredentialInput = ({ value, credentials, onChange }: { value?: string; cre
 );
 
 // "Load models": lists what the pool's API offers; ticking a model adds it to the pool (exact name), unticking removes it.
-const ModelPicker = ({ pool, api, prefix, companyId, onChange }: { pool: PoolConfig; api: ApiInfo; prefix: string; companyId: string; onChange: (p: Partial<PoolConfig>) => void }) => {
+const ModelPicker = ({ pool, api, prefix, companyId, uses, onChange }: { pool: PoolConfig; api: ApiInfo; prefix: string; companyId: string; uses: AgentModelUse[]; onChange: (p: Partial<PoolConfig>) => void }) => {
   const list = usePluginAction("list-api-models");
   const [models, setModels] = useState<string[] | null>(null);
   const [source, setSource] = useState("");
@@ -140,6 +200,7 @@ const ModelPicker = ({ pool, api, prefix, companyId, onChange }: { pool: PoolCon
                 <label key={id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
                   <input type="checkbox" checked={exact || covered} disabled={covered} onChange={() => toggle(id)} />
                   <code>{id}</code>
+                  {(() => { const n = uses.find((u) => u.model === full(id))?.agents.length; return n ? <Pill tone="info">used by {n} agent{n === 1 ? "" : "s"}</Pill> : null; })()}
                   {covered ? <span style={MUTED}>already covered by a wildcard line</span> : null}
                 </label>
               );
@@ -193,8 +254,8 @@ const HostRow = ({ host, poolId, companyId, credentials, error, onChange, onRemo
   );
 };
 
-const PoolCard = ({ pool, companyId, credentials, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; companyId: string; credentials: CredentialSummary[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+const PoolCard = ({ pool, companyId, credentials, uses, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; credentials: CredentialSummary[]; uses: AgentModelUse[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
@@ -267,7 +328,7 @@ const PoolCard = ({ pool, companyId, credentials, index, errorsFor, onChange, on
         <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(prefix, p)).join("\n")}
           onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(prefix, line) : line)) })} />
       </Field>
-      <ModelPicker pool={pool} api={api} prefix={prefix} companyId={companyId} onChange={onChange} />
+      <ModelPicker pool={pool} api={api} prefix={prefix} companyId={companyId} uses={uses} onChange={onChange} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mode" error={err("mode")}>
@@ -303,6 +364,7 @@ const PoolCard = ({ pool, companyId, credentials, index, errorsFor, onChange, on
 export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   const companyId = context.companyId;
   const config = usePluginData<{ pools: PoolConfig[]; credentials: CredentialSummary[] }>("pools-config", { companyId });
+  const agentModels = usePluginData<{ uses: AgentModelUse[] }>("agent-models", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
@@ -362,9 +424,12 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
           {unplaced.map((e) => <li key={`${e.field}:${e.message}`}>{e.message} <span style={MUTED}>({e.field})</span></li>)}
         </ul>
       ) : null}
-      {pools.length === 0 ? <span style={MUTED}>No pools yet. Add one to start.</span> : null}
+      <AgentModelsPanel uses={agentModels.data?.uses ?? []} pools={pools}
+        onAdd={(i, model) => update(i, { patterns: [...pools[i].patterns.filter((p) => p.trim()), model] })}
+        onNewPool={(group) => setPools([...pools, poolFromAgents(group, pools)])} />
+      {pools.length === 0 ? <span style={MUTED}>No pools yet. Start one from your agents' models above, or add one.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} credentials={config.data?.credentials ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} credentials={config.data?.credentials ?? []} uses={agentModels.data?.uses ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>
