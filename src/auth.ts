@@ -48,6 +48,16 @@ export const summarizeAuth = (config: Record<string, unknown>): AuthSlotSummary[
 
 export const createServerAuth = (ctx: PluginContext, clock: () => number = Date.now) => {
   const cache = new Map<string, { at: number; headers: Record<string, string> }>();
+  const secretCache = new Map<string, { at: number; value: string }>();
+  // Any secret field in a company's config, by its property path (e.g. apiEndpoints.litellm.key). Cached briefly.
+  const resolveAt = async (companyId: string, configPath: string, ref: unknown) => {
+    const key = `${companyId}:${configPath}:${JSON.stringify(ref)}`;
+    const hit = secretCache.get(key);
+    if (hit && clock() - hit.at < AUTH_CACHE_MS) return hit.value;
+    const value = await ctx.secrets.resolve(ref as Parameters<PluginContext["secrets"]["resolve"]>[0], { companyId, configPath });
+    secretCache.set(key, { at: clock(), value });
+    return value;
+  };
   // Headers for one company's server (its id on that company's settings page), or undefined when it has no auth.
   const headersFor = async (companyId: string, serverId: string): Promise<Record<string, string> | undefined> => {
     const config = await ctx.config.get(companyId);
@@ -65,7 +75,7 @@ export const createServerAuth = (ctx: PluginContext, clock: () => number = Date.
     cache.set(key, { at: clock(), headers });
     return headers;
   };
-  return { headersFor };
+  return { headersFor, resolveAt };
 };
 
 export type ServerAuth = ReturnType<typeof createServerAuth>;

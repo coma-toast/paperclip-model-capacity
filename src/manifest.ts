@@ -1,5 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
+import { apiEndpointsSchema } from "./apis.js";
 import { authConfigSchema } from "./auth.js";
 import { PRUNE_CRON, SWEEP_CRON } from "./constants.js";
 
@@ -47,12 +48,13 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   instanceConfigSchema: {
     type: "object",
-    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. The settings here are optional: how held tasks are labelled, where alerts are posted, and credentials (Server auth 1–4) for model servers that need them.",
+    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. The settings here are optional: how held tasks are labelled, where alerts are posted, credentials (Server auth 1–4) for backends that need them, and API endpoints for Load models.",
     additionalProperties: false,
     properties: {
       queueLabelId: { type: "string", title: "Queue label", description: "Existing label added to held tasks (optional)." },
       alertIssueId: { type: "string", title: "Alert task", description: "Unassigned standing task that gets alert comments (optional)." },
       ...authConfigSchema,
+      ...apiEndpointsSchema,
     },
   },
   ui: {
