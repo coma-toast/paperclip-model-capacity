@@ -9,8 +9,9 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "api", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
-const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots"];
+const POOL_FIELDS = ["id", "name", "api", "prefix", "endpoint", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
+const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
 const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio"];
 
@@ -66,9 +67,23 @@ export const validatePools = (input: unknown): ValidationResult => {
     if (!APIS.some((a) => a.kind === api)) errors.push({ field: `${at}.api`, message: `Must be one of ${APIS.map((a) => a.kind).join(", ")}` });
     else {
       const info = apiInfo(api);
-      const foreign = isTextList(raw.patterns) ? (raw.patterns as string[]).filter((p) => info.prefix && !p.startsWith(info.prefix)) : [];
-      if (foreign.length) errors.push({ field: `${at}.patterns`, message: `A ${info.label} pool only covers ${info.prefix}… models; move ${foreign.join(", ")} to a pool for its API` });
-      if (!info.hasBackends && Array.isArray(raw.hosts) && raw.hosts.length) errors.push({ field: `${at}.hosts`, message: `${info.label} is a cloud API: there are no backends to watch` });
+      if (raw.prefix !== undefined && typeof raw.prefix !== "string") errors.push({ field: `${at}.prefix`, message: "Must be text" });
+      const prefix = typeof raw.prefix === "string" ? raw.prefix : info.defaultPrefix;
+      const foreign = isTextList(raw.patterns) ? (raw.patterns as string[]).filter((p) => prefix && !p.startsWith(prefix)) : [];
+      if (foreign.length) errors.push({ field: `${at}.patterns`, message: `This pool's models start with ${prefix}; ${foreign.join(", ")} belongs in a pool for its own API` });
+      if ((info.group === "cloud" || info.group === "local") && Array.isArray(raw.hosts) && raw.hosts.length) {
+        errors.push({ field: `${at}.hosts`, message: info.group === "cloud" ? `${info.label} is a cloud API: there are no backends to watch` : `${info.label} is checked directly at its address; it has no separate backends` });
+      }
+      const endpoint = raw.endpoint;
+      if (endpoint !== undefined && !isObject(endpoint)) errors.push({ field: `${at}.endpoint`, message: "Must be an object" });
+      else {
+        if (endpoint) unknownFields(endpoint, ENDPOINT_FIELDS, `${at}.endpoint`, errors);
+        const url = endpoint?.baseUrl;
+        if (url !== undefined && url !== "" && !isHttpUrl(url)) errors.push({ field: `${at}.endpoint.baseUrl`, message: "Must be an http(s) URL" });
+        if (info.group === "local" && !isHttpUrl(url)) errors.push({ field: `${at}.endpoint.baseUrl`, message: `Enter the ${info.label} server's address, e.g. ${info.placeholderUrl}` });
+        if (endpoint?.credential !== undefined && endpoint.credential !== "" && !isText(endpoint.credential)) errors.push({ field: `${at}.endpoint.credential`, message: "Must be a credential name" });
+        if (endpoint?.slots !== undefined && !isWhole(endpoint.slots, 1)) errors.push({ field: `${at}.endpoint.slots`, message: "Must be a whole number, 1 or more" });
+      }
     }
     if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
     if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });

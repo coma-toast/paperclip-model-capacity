@@ -4,7 +4,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
-import { createServerAuth } from "./auth.js";
+import { createCredentials } from "./auth.js";
 import { createExecutor } from "./executor.js";
 import { loadScopedPools, splitPoolKey } from "./pools.js";
 import { probeAll } from "./probes/index.js";
@@ -39,11 +39,11 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     const value = (await ctx.config.get(companyId))[key];
     return typeof value === "string" && value ? value : undefined;
   };
-  const serverAuth = createServerAuth(ctx);
-  // Hosts in the scheduler's list carry "<companyId>:<serverId>" ids; auth is looked up in that company's config.
+  const credentials = createCredentials(ctx);
+  // Hosts in the scheduler's list carry "<companyId>:<serverId>" ids; their credential is a name in that company's config.
   const hostHeaders = async (host: HostConfig) => {
     const parts = splitPoolKey(host.id);
-    return parts ? serverAuth.headersFor(parts.companyId, parts.poolId) : undefined;
+    return parts ? credentials.headersFor(parts.companyId, host.credential) : undefined;
   };
   const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
   // Alerts without a company (plugin errors) go only to companies that use the plugin.
@@ -155,7 +155,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, serverAuth, snapshot: () => lastSnapshot };
+  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, credentials, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;
