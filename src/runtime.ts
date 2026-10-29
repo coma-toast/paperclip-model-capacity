@@ -39,7 +39,13 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     return typeof value === "string" && value ? value : undefined;
   };
   const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
-  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId"), listCompanies: () => companies.list() });
+  // Alerts without a company (plugin errors) go only to companies that use the plugin.
+  const companiesWithPools = async () => {
+    const all = await companies.list();
+    const used = await Promise.all(all.map(async (c) => (await store.companyPools(c.id).get()).length > 0));
+    return all.filter((_, i) => used[i]);
+  };
+  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId"), listCompanies: companiesWithPools });
   const pluginError = (state: "start" | "clear", message: string): AlertEvent =>
     ({ kind: "pluginError", subject: "cycle", state, message, at: now().toISOString() });
   let chain: Promise<void> = Promise.resolve();
@@ -87,10 +93,11 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), now });
       await store.hosts.set(statuses);
       for (const change of changes) ctx.logger.info("Model capacity host changed", { hostId: change.hostId, up: change.up });
-      const names = new Map(pools.flatMap((p) => p.hosts.map((h) => [h.id, { host: h.name, pool: p.id }] as const)));
+      const names = new Map(pools.flatMap((p) => p.hosts.map((h) => [h.id, { host: h.name, pool: p.id, companyId: p.companyId }] as const)));
       // Host down opens an alert and coming back up clears it (G1: host down/up).
       await alerter.apply(changes.map((c) => ({
         kind: "hostDown" as const, subject: c.hostId, state: c.up ? ("clear" as const) : ("start" as const), poolId: names.get(c.hostId)?.pool,
+        companyId: names.get(c.hostId)?.companyId,
         message: `${names.get(c.hostId)?.host ?? c.hostId} is ${c.up ? "back up" : "not answering health checks"}`, at: now().toISOString(),
       })));
       if (changes.length) schedule("host change");

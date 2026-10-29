@@ -84,8 +84,9 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
 // so companies are learned there and saved; timer work reads the saved list.
 export const COMPANY_REFRESH_MS = 5 * 60_000;
 
-// A company the host refused is not asked about again for this long, so the host log doesn't fill with denials.
-export const DENIED_COMPANY_BACKOFF_MS = 10 * 60_000;
+// A company the host refused is not asked about again for this long, so the host log doesn't fill with denials. Kept
+// short because the host also refuses briefly while it loads the plugin's companies after a restart.
+export const DENIED_COMPANY_BACKOFF_MS = 2 * 60_000;
 
 export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: () => number = Date.now) => {
   let refreshedAt = 0;

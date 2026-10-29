@@ -111,7 +111,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     if (count > available) {
       actions.push({
         kind: "alert",
-        alert: { kind: "overLimit", subject: key, state: "start", poolId: pool.id, companyId: group.companyId, at: snapshot.now, message: `${pool.name}: ${count} runs, limit ${available}` },
+        alert: { kind: "overLimit", subject: key, state: "start", poolId: pool.id, companyId: pool.companyId ?? group.companyId, at: snapshot.now, message: `${pool.name}: ${count} runs, limit ${available}` },
       });
     }
 
