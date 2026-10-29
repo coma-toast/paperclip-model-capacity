@@ -78,11 +78,24 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
 
 // Keeps the last good company list: the host can refuse a proactive companies.list while another invocation is in
 // flight, and one refused call shouldn't stop a cycle.
+// A proactive call is refused only while some other host invocation is in flight (a UI poll, an event), so a short
+// retry usually gets through.
+const retryRefused = async <T>(fn: () => Promise<T>, tries = 3, delayMs = 250): Promise<T> => {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= tries || !isScopeDenied(e)) throw e;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+};
+
 export const createCompanyLister = (ctx: PluginContext, store?: Store) => {
   let last: Company[] | undefined;
   return async (): Promise<Company[]> => {
     try {
-      last = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+      last = await retryRefused(() => pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset })));
       await store?.companies.set(last.map((c) => ({ id: c.id, name: c.name })));
     } catch (e) {
       if (!last) {
@@ -132,7 +145,8 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   if (skippedCompanies.length) ctx.logger.debug("Model capacity skipped companies without plugin config", { companies: skippedCompanies });
 
   const poolOf = (model: string | undefined): PoolConfig | undefined => matchPool(model, pools);
-  const rows = (await readRuns()) ?? activeRunRows([...issuesById.values()]);
+  const dbRows = await readRuns();
+  const rows = dbRows ?? activeRunRows([...issuesById.values()]);
   const runs: RunningRun[] = [];
   for (const row of rows) {
     if (!ACTIVE.has(row.status)) continue;
@@ -163,5 +177,11 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),
     heldPools, exemptAgentIds: exemptions.agentIds,
+    diagnostics: {
+      runSource: dbRows ? "heartbeat_runs" : "activeRun", activeRunRows: rows.filter((r) => ACTIVE.has(r.status)).length,
+      unmatchedRunModels: [...new Set(runs.filter((r) => !r.poolId).map((r) => r.model ?? "(none)"))].slice(0, 20),
+      runsWithoutAgent: rows.filter((r) => ACTIVE.has(r.status) && !agentsByCompany.get(r.company_id)?.get(r.agent_id)).length,
+      skippedCompanies,
+    },
   };
 };

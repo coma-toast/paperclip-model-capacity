@@ -128,6 +128,16 @@ export interface Snapshot {
   heldPools: string[];
   // Agents an operator exempted (F4): their tasks never wait but still count (B5). Task exemptions are on OpenTask.
   exemptAgentIds?: string[];
+  // How the snapshot was built, for the operator (not used by decide()).
+  diagnostics?: SnapshotDiagnostics;
+}
+
+export interface SnapshotDiagnostics {
+  runSource: "heartbeat_runs" | "activeRun";
+  activeRunRows: number;
+  unmatchedRunModels: string[];
+  runsWithoutAgent: number;
+  skippedCompanies: string[];
 }
 
 export type AlertKind =
