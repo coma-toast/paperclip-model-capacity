@@ -4,6 +4,8 @@ export const STATE_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PROBE_INTERVAL_MS = 30_000;
 export const PROBE_TIMEOUT_MS = 5_000;
+// Spend and credit endpoints change slowly; local slots are also probed every DEFAULT_PROBE_INTERVAL_MS for gating.
+export const DEFAULT_USAGE_INTERVAL_MS = 120_000;
 export const HOST_DOWN_AFTER_FAILURES = 3;
 export const HOST_UP_AFTER_SUCCESSES = 2;
 

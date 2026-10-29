@@ -1,15 +1,17 @@
 import { Spinner, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 
 import { apiInfo } from "../apis.js";
-import type { PoolSummary } from "../api.js";
+import type { BackendUsageRow, PoolSummary } from "../api.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
+import { BackendUsageTable } from "./components/usage.js";
 
 interface Summary {
   pools: PoolSummary[];
+  backends?: BackendUsageRow[];
   lastCycleAt?: string;
 }
 
-// H1: one row per pool with use, queue, oldest wait, host dots and alerts.
+// H1: one row per pool with use, queue, oldest wait, host dots and alerts; then each backend's spend, credits or slots.
 export const DashboardWidget = ({ context }: PluginWidgetProps) => {
   const { data, loading, error, refresh } = usePluginData<Summary>("capacity-summary", { companyId: context.companyId });
   usePoll(refresh);
@@ -44,6 +46,7 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
           ))}
         </tbody>
       </table>
+      <BackendUsageTable rows={data.backends ?? []} companyId={context.companyId} onRefreshed={refresh} />
     </div>
   );
 };
