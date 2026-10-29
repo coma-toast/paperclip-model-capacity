@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { InspectHostResult } from "../api.js";
+import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiKind } from "../apis.js";
 import type { AuthSlotSummary } from "../auth.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
@@ -17,14 +18,14 @@ const ENGINES: { value: EngineKind; label: string }[] = [
   { value: "lmstudio", label: "LM Studio" },
 ];
 
-const PLACED = /^pools\[\d+\]\.(name|id|limit|alertAfterMinutes|patterns|mode|privacy|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots))$/;
+const PLACED = /^pools\[\d+\]\.(name|id|api|hosts|limit|alertAfterMinutes|patterns|mode|privacy|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots))$/;
 
 // Blank pattern lines are kept while typing (so Enter starts a new line) and dropped on save.
 const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
 
 // A9: a new pool starts in observe mode.
 const newPool = (n: number): PoolConfig => ({
-  id: `pool-${n}`, name: `Pool ${n}`, patterns: [], limit: 1, privacy: "shared", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
+  id: `pool-${n}`, name: `Pool ${n}`, api: "litellm", patterns: [], limit: 1, privacy: "shared", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
 });
 const newHost = (n: number): HostConfig => ({ id: `host-${n}`, name: `Host ${n}`, engine: "llamacpp", baseUrl: "http://", declaredSlots: 1 });
 
@@ -125,10 +126,14 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
   const setHost = (k: number, patch: Partial<HostConfig>) => onChange({ hosts: pool.hosts.map((h, j) => (j === k ? { ...h, ...patch } : h)) });
+  const api = apiInfo(pool.api ?? inferApi(pool.patterns.filter((p) => p.trim())));
+  // Switching API keeps the names typed and moves them under the new API's prefix.
+  const switchApi = (kind: ApiKind) => onChange({ api: kind, patterns: pool.patterns.map((p) => (p.trim() ? addPrefix(kind, stripPrefix(api.kind, p)) : p)) });
   return (
     <Card>
       <header style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <strong style={{ fontSize: 16 }}>{pool.name || pool.id || "New pool"}</strong>
+        <Pill tone="ok">{api.label}</Pill>
         <Pill tone={pool.mode === "enforce" ? "warn" : "info"}>{pool.mode === "enforce" ? "Enforcing" : "Observing only"}</Pill>
         <Pill>{pool.limit} run{pool.limit === 1 ? "" : "s"} at once</Pill>
         <Pill>{pool.privacy}</Pill>
@@ -147,10 +152,16 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
         </Field>
       </div>
 
-      <Field label="Agent models in this pool" error={err("patterns")}
-        hint="One per line, written the way agents name their model: usually a LiteLLM model name such as litellm/vm. A task counts here when its model matches a line (* matches anything, ? one character). This only matches names; it doesn't change LiteLLM.">
-        <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.join("\n")}
-          onChange={(e) => onChange({ patterns: e.target.value.split("\n") })} />
+      <Field label="API" error={err("api")}>
+        <Choice value={api.kind} onChange={(kind: ApiKind) => switchApi(kind)} options={APIS.map((a) => ({ value: a.kind, label: a.label, hint: a.hint }))} />
+      </Field>
+
+      <Field label={api.prefix ? `${api.label} models in this pool (after ${api.prefix})` : "Models in this pool (full names)"} error={err("patterns")}
+        hint={api.prefix
+          ? `One per line, without the ${api.prefix} prefix: e.g. ${api.kind === "litellm" ? "vm or pc-omo-local-*" : "*-free"}. A task counts here when its model is ${api.prefix} plus a line (* matches anything, ? one character). This only matches names; it changes nothing in ${api.label}.`
+          : "One per line, the model name exactly as agents use it (* matches anything, ? one character)."}>
+        <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(api.kind, p)).join("\n")}
+          onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(api.kind, line) : line)) })} />
       </Field>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -168,14 +179,14 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
         </Field>
       </div>
 
-      <div style={{ display: "grid", gap: 8 }}>
+      {api.hasBackends ? <div style={{ display: "grid", gap: 8 }}>
         <SectionTitle title="Backends behind these models (read-only)" hint="Optional. The servers LiteLLM sends these models to, for example the llama.cpp server on CT118. The plugin only reads their health and busy slots, so the pool stops releasing work while they are down or busy with work from outside Paperclip; Check server shows what one is running now. It never changes LiteLLM or the servers, so keep this list in step with LiteLLM's model config." />
         {pool.hosts.length === 0 ? <span style={MUTED}>No backends listed: only the limit above applies (typical for cloud models).</span> : null}
         {pool.hosts.map((h, k) => (
           <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} auth={auth.find((a) => a.server === h.id)} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
         ))}
         <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add backend</Button></div>
-      </div>
+      </div> : <span style={MUTED}>{api.label} is a cloud API, so there are no backends to watch: only the limit above applies.{pool.hosts.length ? " Remove this pool's backends or switch its API before saving." : ""}</span>}
     </Card>
   );
 };
@@ -233,7 +244,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       <div style={{ display: "grid", gap: 4 }}>
         <strong style={{ fontSize: 18 }}>Model capacity pools</strong>
         <span style={{ ...MUTED, fontSize: 13 }}>
-          These pools apply to this company only. Agents ask for a model by name (for LiteLLM agents, a LiteLLM model like litellm/vm); LiteLLM then sends the request to a backend server. A pool groups model names and caps how many of this company's agent runs can use them at once, and can watch the backends behind them. Extra tasks wait in a queue and start in priority order when a slot frees.
+          These pools apply to this company only. Each pool belongs to one model API (LiteLLM, OpenCode, OpenRouter or other), the part an agent's model name starts with, like litellm/vm. A pool groups models from that API and caps how many of this company's agent runs can use them at once. For self-hosted APIs like LiteLLM it can also watch the backend servers the API sends work to. Extra tasks wait in a queue and start in priority order when a slot frees.
           New pools start in <strong>Observe</strong>: the plugin only logs what it would hold until you switch the pool to <strong>Enforce</strong>.
         </span>
       </div>

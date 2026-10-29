@@ -1,3 +1,4 @@
+import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
 import { DEFAULT_ALERT_AFTER_MINUTES } from "./constants.js";
 import type { EngineKind, HostConfig, PoolConfig } from "./types.js";
 
@@ -8,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const POOL_FIELDS = ["id", "name", "api", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
 const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio"];
@@ -61,6 +62,14 @@ export const validatePools = (input: unknown): ValidationResult => {
     ids.add(String(raw.id).toLowerCase());
     names.add(String(raw.name).toLowerCase());
     if (!isTextList(raw.patterns) || !(raw.patterns as string[]).length) errors.push({ field: `${at}.patterns`, message: "Needs at least one model pattern" });
+    const api: ApiKind = raw.api === undefined ? inferApi(isTextList(raw.patterns) ? (raw.patterns as string[]) : []) : (raw.api as ApiKind);
+    if (!APIS.some((a) => a.kind === api)) errors.push({ field: `${at}.api`, message: `Must be one of ${APIS.map((a) => a.kind).join(", ")}` });
+    else {
+      const info = apiInfo(api);
+      const foreign = isTextList(raw.patterns) ? (raw.patterns as string[]).filter((p) => info.prefix && !p.startsWith(info.prefix)) : [];
+      if (foreign.length) errors.push({ field: `${at}.patterns`, message: `A ${info.label} pool only covers ${info.prefix}… models; move ${foreign.join(", ")} to a pool for its API` });
+      if (!info.hasBackends && Array.isArray(raw.hosts) && raw.hosts.length) errors.push({ field: `${at}.hosts`, message: `${info.label} is a cloud API: there are no backends to watch` });
+    }
     if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
     if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
     if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });
@@ -90,6 +99,7 @@ export const validatePools = (input: unknown): ValidationResult => {
     }
     pools.push({
       ...(raw as unknown as PoolConfig),
+      api,
       mode: (raw.mode as PoolConfig["mode"]) ?? "observe",
       scope: (raw.scope as PoolConfig["scope"]) ?? "instance",
       hosts: hosts.filter((h): h is HostConfig => Boolean(h)),

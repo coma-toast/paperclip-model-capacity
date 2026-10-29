@@ -1,5 +1,6 @@
 import { Spinner, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 
+import { apiInfo } from "../apis.js";
 import type { PoolSummary } from "../api.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
 
@@ -33,7 +34,7 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
         <tbody>
           {data.pools.map((p) => (
             <tr key={p.id}>
-              <td>{p.name}</td>
+              <td>{p.name} <span style={{ opacity: 0.6 }}>· {apiInfo(p.api).label}</span></td>
               <td title={`limit ${p.limit}`}>{p.inUse}/{p.available}</td>
               <td>{p.queued}</td>
               <td>{formatWait(p.oldestWaitSeconds)}</td>

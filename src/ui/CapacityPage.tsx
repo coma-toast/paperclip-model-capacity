@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { DataTable, MetricCard, StatusBadge, usePluginAction, usePluginData, usePluginToast, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 
+import { apiInfo } from "../apis.js";
 import type { PoolSummary, QueueRow } from "../api.js";
 import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
@@ -67,7 +68,7 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
           <tbody>
             {pools.map((p) => (
               <tr key={p.id}>
-                <td>{p.name} <span style={{ opacity: 0.6 }}>({p.privacy})</span></td>
+                <td>{p.name} <span style={{ opacity: 0.6 }}>· {apiInfo(p.api).label} · {p.privacy}</span></td>
                 <td>{p.inUse}/{p.available}</td>
                 <td>
                   <input aria-label={`${p.name} limit`} type="number" min={0} style={{ ...inputStyle, width: 64, marginRight: 6 }} value={limits[p.id] ?? String(p.limit)}
