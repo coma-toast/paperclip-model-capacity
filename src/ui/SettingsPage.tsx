@@ -155,9 +155,10 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
 
   const save = async () => {
     const name = draft.name.trim();
+    const address = (draft.baseUrl ?? info.defaultBaseUrl).trim();
     if (!name) return setProblem("Give the backend a name.");
-    if (needsAddress && !draft.baseUrl?.trim()) return setProblem(`Enter the address, e.g. ${info.placeholderUrl}.`);
-    if (draft.baseUrl?.trim() && !/^https?:\/\//.test(draft.baseUrl.trim())) return setProblem("The address must start with http:// or https://");
+    if (needsAddress && !address) return setProblem(`Enter the address, e.g. ${info.placeholderUrl}.`);
+    if (address && !/^https?:\/\//.test(address)) return setProblem("The address must start with http:// or https://");
     setBusy("save");
     setProblem(undefined);
     try {
@@ -169,8 +170,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       const keyBinding = key.trim() ? await createCompanySecret(companyId, `Model capacity: ${name} key (${new Date().toISOString().slice(0, 16)})`, key.trim()) : previous?.key;
       const backend: Backend = {
         id, name, type: draft.type,
-        ...(draft.baseUrl?.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
-        ...(draft.prefix !== undefined && draft.prefix !== info.defaultPrefix ? { prefix: draft.prefix } : {}),
+        // Stored explicitly (defaults included) so the host's config form shows them too.
+        ...(address ? { baseUrl: address } : {}),
+        prefix: (draft.prefix ?? info.defaultPrefix).trim(),
         ...(info.group === "local" ? { slots: draft.slots ?? 1 } : {}),
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
@@ -192,7 +194,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       <div style={{ background: "var(--background, #1c1c1c)", color: "inherit", border: "1px solid rgba(128,128,128,0.45)", borderRadius: 12, padding: 20, width: "min(640px, 100%)", display: "grid", gap: 14 }}>
         <strong style={{ fontSize: 16 }}>{initial ? `Edit ${initial.name}` : "Add a backend"}</strong>
         <Field label="Type" hint={info.hint}>
-          <select style={inputStyle} value={draft.type} onChange={(e) => set({ type: e.target.value as ApiKind, prefix: undefined })}>
+          <select style={inputStyle} value={draft.type} onChange={(e) => set({ type: e.target.value as ApiKind, prefix: undefined, baseUrl: undefined })}>
             {(["gateway", "cloud", "local", "names"] as const).map((group) => (
               <optgroup key={group} label={{ gateway: "Proxies and gateways", cloud: "Cloud APIs", local: "Local engines", names: "Other" }[group]}>
                 {APIS.filter((a) => a.group === group).map((a) => <option key={a.kind} value={a.kind}>{a.label}</option>)}
@@ -204,8 +206,8 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
           <input style={inputStyle} value={draft.name} placeholder={info.label} onChange={(e) => set({ name: e.target.value })} />
         </Field>
         {info.group !== "names" ? (
-          <Field label="Address" hint={info.defaultBaseUrl ? `Leave empty for ${info.defaultBaseUrl}.` : info.group === "local" ? "The engine itself; the plugin checks its health and load here." : "The plugin only reads from it (model list, health)."}>
-            <input style={inputStyle} value={draft.baseUrl ?? ""} placeholder={info.placeholderUrl} onChange={(e) => set({ baseUrl: e.target.value })} />
+          <Field label="Address" hint={info.defaultBaseUrl ? `${info.label}'s usual address; change it only for a different region or proxy.` : info.group === "local" ? "The engine itself; the plugin checks its health and load here." : "The plugin only reads from it (model list, health)."}>
+            <input style={inputStyle} value={draft.baseUrl ?? info.defaultBaseUrl} placeholder={info.placeholderUrl} onChange={(e) => set({ baseUrl: e.target.value })} />
           </Field>
         ) : null}
         {info.group !== "names" ? (
