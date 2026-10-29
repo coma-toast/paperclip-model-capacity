@@ -7,7 +7,7 @@ import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, createAgentCache, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
-import type { AlertEvent } from "./types.js";
+import type { AlertEvent, Snapshot } from "./types.js";
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -37,6 +37,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   let probeTimer: ReturnType<typeof setInterval> | undefined;
   let lastCycleAt: string | undefined;
   let lastError: string | undefined;
+  let lastSnapshot: Snapshot | undefined;
 
   // One cycle at a time, so two triggers never read the same state and both act on it.
   const cycle = (reason: string) => {
@@ -46,6 +47,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };
+        lastSnapshot = snapshot;
         const actions = decide(snapshot, now());
         await executor.execute(actions, snapshot);
         const alerts = actions.flatMap((a) => (a.kind === "alert" ? [a.alert] : []));
@@ -121,7 +123,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, probeTick, idle, health, store };
+  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;
