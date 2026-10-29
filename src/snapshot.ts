@@ -78,34 +78,34 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
 
 // Keeps the last good company list: the host can refuse a proactive companies.list while another invocation is in
 // flight, and one refused call shouldn't stop a cycle.
-// A proactive call is refused only while some other host invocation is in flight (a UI poll, an event), so a short
-// retry usually gets through.
-const retryRefused = async <T>(fn: () => Promise<T>, tries = 3, delayMs = 250): Promise<T> => {
-  for (let i = 1; ; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i >= tries || !isScopeDenied(e)) throw e;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-};
+// The host refuses a proactive (timer or sweep) companies.list whenever any other host invocation is registered, which
+// is nearly always on a live instance. Inside an event handler the call carries a valid invocation id and is allowed,
+// so companies are learned there and saved; timer work reads the saved list.
+export const COMPANY_REFRESH_MS = 5 * 60_000;
 
-export const createCompanyLister = (ctx: PluginContext, store?: Store) => {
-  let last: Company[] | undefined;
-  return async (): Promise<Company[]> => {
-    try {
-      last = await retryRefused(() => pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset })));
-      await store?.companies.set(last.map((c) => ({ id: c.id, name: c.name })));
-    } catch (e) {
-      if (!last) {
-        const saved = (await store?.companies.get()) ?? [];
-        if (!saved.length) throw e;
-        last = saved as unknown as Company[];
+export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: () => number = Date.now) => {
+  let refreshedAt = 0;
+  const save = async (list: { id: string; name: string }[]) => {
+    const current = await store.companies.get();
+    // A placeholder name (the id) never replaces a real one.
+    const byId = new Map(current.map((c) => [c.id, c]));
+    for (const c of list) if (!byId.has(c.id)) byId.set(c.id, c);
+    if (byId.size !== current.length) await store.companies.set([...byId.values()]);
+  };
+  return {
+    // Call from inside an event handler: records the event's company, and refreshes the full list now and then.
+    noteFromEvent: async (companyId: string | undefined) => {
+      if (companyId) await save([{ id: companyId, name: companyId }]).catch(() => undefined);
+      if (clock() - refreshedAt < COMPANY_REFRESH_MS) return;
+      refreshedAt = clock();
+      try {
+        const list = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+        await store.companies.set(list.map((c) => ({ id: c.id, name: c.name })));
+      } catch (e) {
+        ctx.logger.warn("companies.list failed inside an event; keeping the saved list", { error: e instanceof Error ? e.message : String(e) });
       }
-      ctx.logger.warn("companies.list failed; using the last known list", { error: e instanceof Error ? e.message : String(e) });
-    }
-    return last;
+    },
+    list: async () => (await store.companies.get()) as unknown as Company[],
   };
 };
 

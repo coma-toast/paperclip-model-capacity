@@ -111,6 +111,7 @@ describe("worker integration", () => {
     let runs: RunRow[] = [{ id: "r0", company_id: "c1", agent_id: "a1", issue_id: "i0", status: "running", started_at: NOW }];
     const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => runs });
     runtimes.push(rt);
+    await rt.store.companies.set([{ id: "c1", name: "c1" }]);
     await rt.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"], alertAfterMinutes: 30 })]);
     await rt.cycle("sweep");
     await rt.store.holds.set({ t1: { ...(await rt.store.holds.get()).t1, heldAt: minutesAgo(45) } });

@@ -81,6 +81,7 @@ describe("board actions and data handlers", () => {
     });
     const runtime = createRuntime(harness.ctx, { probeIntervalMs: 0, debounceMs: 10_000, readRuns: async () => [] });
     runtimes.push(runtime);
+    await runtime.store.companies.set([{ id: "c1", name: "c1" }]);
     registerApi(harness.ctx, runtime, () => new Date(NOW));
     return { harness, runtime, store: runtime.store };
   };
