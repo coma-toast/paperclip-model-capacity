@@ -1,4 +1,4 @@
-import type { Agent, Issue, PluginContext } from "@paperclipai/plugin-sdk";
+import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK } from "./constants.js";
 import { matchPool } from "./scheduler/match.js";
@@ -72,19 +72,35 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
       : [],
   );
 
+// Keeps the last good company list: the host can refuse a proactive companies.list while another invocation is in
+// flight, and one refused call shouldn't stop a cycle.
+export const createCompanyLister = (ctx: PluginContext) => {
+  let last: Company[] | undefined;
+  return async () => {
+    try {
+      last = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+    } catch (e) {
+      if (!last) throw e;
+      ctx.logger.warn("companies.list failed; using the last known list", { error: e instanceof Error ? e.message : String(e) });
+    }
+    return last;
+  };
+};
+
 export interface SnapshotDeps {
   ctx: PluginContext;
   store: Store;
   agents: AgentCache;
   readRuns: RunReader;
+  listCompanies?: () => Promise<Company[]>;
   now?: Date;
 }
 
-export const buildSnapshot = async ({ ctx, store, agents, readRuns, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
+export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [pools, hosts, holds, released, overrides, heldPools, exemptions] = await Promise.all([
     store.pools.get(), store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.heldPools.get(), store.exemptions.get(),
   ]);
-  const companies = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+  const companies = listCompanies ? await listCompanies() : await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
   const exemptIssues = new Set(exemptions.issueIds);
   const issuesById = new Map<string, Issue>();
   const agentsByCompany = new Map<string, Map<string, Agent>>();

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
@@ -5,7 +7,7 @@ import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { createExecutor } from "./executor.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
-import { buildSnapshot, createAgentCache, dbRunReader, type RunReader } from "./snapshot.js";
+import { buildSnapshot, createAgentCache, createCompanyLister, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
 import type { AlertEvent, Snapshot } from "./types.js";
 
@@ -17,12 +19,19 @@ export interface RuntimeOptions {
   now?: () => Date;
 }
 
+// Captured at module load, before any host invocation. The SDK tags each host call with the current invocation id
+// from AsyncLocalStorage, and a timer set inside an event handler would carry that id after the invocation ended,
+// so the host rejects it as expired. Timer work runs in this clean context instead, as proactive work that the host
+// allows for the plugin's configured companies.
+const outsideInvocation = AsyncLocalStorage.snapshot();
+
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => {
   const now = opts.now ?? (() => new Date());
   const store = createStore(ctx.state);
   const agents = createAgentCache(ctx);
+  const listCompanies = createCompanyLister(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
   const configId = async (companyId: string, key: string) => {
     const value = (await ctx.config.get(companyId))[key];
@@ -43,7 +52,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const cycle = (reason: string) => {
     chain = chain.then(async () => {
       try {
-        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, now: now() });
+        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies, now: now() });
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };
@@ -67,7 +76,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   // Run events arrive in bursts; one cycle per burst is enough and keeps the 10 s release target (C3).
   const schedule = (reason: string) => {
     clearTimeout(debounce);
-    debounce = setTimeout(() => void cycle(reason), opts.debounceMs ?? RUN_EVENT_DEBOUNCE_MS);
+    debounce = setTimeout(() => outsideInvocation(() => void cycle(reason)), opts.debounceMs ?? RUN_EVENT_DEBOUNCE_MS);
   };
 
   const probeTick = async () => {
@@ -104,7 +113,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     });
     const interval = opts.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;
     if (interval > 0) {
-      probeTimer = setInterval(() => void probeTick(), interval);
+      probeTimer = setInterval(() => outsideInvocation(() => void probeTick()), interval);
       probeTimer.unref?.();
     }
   };
