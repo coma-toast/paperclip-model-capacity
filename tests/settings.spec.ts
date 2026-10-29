@@ -165,10 +165,18 @@ describe("pools are demarcated by API", () => {
     expect(r.ok && r.pools.map((p) => p.api)).toEqual(["litellm", "opencode", "other"]);
   });
 
-  it("rejects a model from another API in a pool", () => {
-    expect(validatePools([raw("vm", { api: "litellm", patterns: ["litellm/vm", "opencode/x-free"] })])).toEqual({
-      ok: false, errors: [{ field: "pools[0].patterns", message: "A LiteLLM pool only covers litellm/… models; move opencode/x-free to a pool for its API" }],
+  it("rejects a model that doesn't start with the pool's prefix", () => {
+    expect(validatePools([raw("p", { api: "litellm", patterns: ["litellm/a", "opencode/x-free"] })])).toEqual({
+      ok: false, errors: [{ field: "pools[0].patterns", message: "This pool's models start with litellm/; opencode/x-free belongs in a pool for its own API" }],
     });
+    expect(fields([raw("p", { api: "ollama", prefix: "local/", patterns: ["local/qwen3:*"], endpoint: { baseUrl: "http://localhost:11434" } })])).toEqual([]);
+  });
+
+  it("needs a server address for a local engine, and no separate backends", () => {
+    const host = { id: "h", name: "h", engine: "ollama", baseUrl: "http://h" };
+    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/*"] })])).toEqual(["pools[0].endpoint.baseUrl"]);
+    expect(fields([raw("o", { api: "ollama", patterns: ["ollama/*"], endpoint: { baseUrl: "http://localhost:11434" }, hosts: [host] })])).toEqual(["pools[0].hosts"]);
+    expect(fields([raw("g", { api: "openai", patterns: ["*"], endpoint: { baseUrl: "ftp://x", slots: 0, extra: 1 } })])).toEqual(["pools[0].endpoint.extra", "pools[0].endpoint.baseUrl", "pools[0].endpoint.slots"]);
   });
 
   it("rejects backends on a cloud API and an unknown API", () => {

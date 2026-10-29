@@ -18,6 +18,16 @@ export interface HostConfig {
   engine: EngineKind;
   baseUrl: string;
   declaredSlots: number;
+  // Name of a company credential (Credential 1–4) sent with health checks and Check server.
+  credential?: string;
+}
+
+// Where a pool's API lives: used by Load models, and for a local engine also checked directly as the pool's server.
+export interface PoolEndpoint {
+  baseUrl?: string;
+  credential?: string;
+  // Local engines: how many requests the server runs at once when it doesn't report slots.
+  slots?: number;
 }
 
 export interface OverflowConfig {
@@ -36,8 +46,11 @@ export interface CompanyFilter {
 export interface PoolConfig {
   id: string;
   name: string;
-  // The model API this pool covers (apis.ts); every pattern starts with its prefix.
+  // The model API this pool covers (apis.ts); every pattern starts with the pool's prefix.
   api?: ApiKind;
+  // Model-name prefix the pool's agents use for this API; defaults to the API's suggestion.
+  prefix?: string;
+  endpoint?: PoolEndpoint;
   patterns: string[];
   limit: number;
   privacy: PoolPrivacy;

@@ -1,19 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { addPrefix, inferApi, stripPrefix } from "../src/apis.js";
+import { addPrefix, inferApi, poolPrefix, stripPrefix } from "../src/apis.js";
 
 describe("API prefixes", () => {
-  it("adds and strips the API's prefix, leaving other APIs' names alone", () => {
-    expect(addPrefix("litellm", "vm")).toBe("litellm/vm");
-    expect(addPrefix("litellm", "litellm/vm")).toBe("litellm/vm");
-    expect(addPrefix("other", "claude-sonnet-5-5")).toBe("claude-sonnet-5-5");
-    expect(stripPrefix("litellm", "litellm/pc-omo-local-*")).toBe("pc-omo-local-*");
-    expect(stripPrefix("opencode", "litellm/vm")).toBe("litellm/vm");
+  it("adds and strips a prefix, leaving other names alone", () => {
+    expect(addPrefix("litellm/", "m")).toBe("litellm/m");
+    expect(addPrefix("litellm/", "litellm/m")).toBe("litellm/m");
+    expect(addPrefix("", "model-x")).toBe("model-x");
+    expect(stripPrefix("litellm/", "litellm/a-*")).toBe("a-*");
+    expect(stripPrefix("opencode/", "litellm/m")).toBe("litellm/m");
+  });
+
+  it("uses a pool's own prefix over its API's suggestion", () => {
+    expect(poolPrefix({ api: "ollama" })).toBe("ollama/");
+    expect(poolPrefix({ api: "ollama", prefix: "local/" })).toBe("local/");
+    expect(poolPrefix({ api: "openai" })).toBe("");
   });
 
   it("infers an API only when every pattern names it", () => {
     expect(inferApi(["openrouter/a", "openrouter/b"])).toBe("openrouter");
-    expect(inferApi(["litellm/vm", "opencode/x"])).toBe("other");
+    expect(inferApi(["litellm/a", "opencode/x"])).toBe("other");
     expect(inferApi([])).toBe("other");
   });
 });

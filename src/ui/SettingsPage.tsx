@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { InspectHostResult } from "../api.js";
-import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiInfo, type ApiKind } from "../apis.js";
-import type { AuthSlotSummary } from "../auth.js";
+import { APIS, addPrefix, apiInfo, inferApi, poolPrefix, stripPrefix, type ApiInfo, type ApiKind } from "../apis.js";
+import type { CredentialSummary } from "../auth.js";
 import { patternMatches } from "../scheduler/match.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
@@ -14,19 +14,19 @@ type Result = { ok: boolean; error?: string; errors?: FieldError[] };
 const ENGINES: { value: EngineKind; label: string }[] = [
   { value: "llamacpp", label: "llama.cpp server" },
   { value: "ollama", label: "Ollama" },
-  { value: "openai", label: "OpenAI-compatible (LiteLLM, oMLX…)" },
+  { value: "openai", label: "OpenAI-compatible (/v1/models)" },
   { value: "vllm", label: "vLLM" },
   { value: "lmstudio", label: "LM Studio" },
 ];
 
-const PLACED = /^pools\[\d+\]\.(name|id|api|hosts|limit|alertAfterMinutes|patterns|mode|privacy|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots))$/;
+const PLACED = /^pools\[\d+\]\.(name|id|api|prefix|hosts|limit|alertAfterMinutes|patterns|mode|privacy|endpoint\.(baseUrl|credential|slots)|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots|credential))$/;
 
 // Blank pattern lines are kept while typing (so Enter starts a new line) and dropped on save.
 const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
 
 // A9: a new pool starts in observe mode.
 const newPool = (n: number): PoolConfig => ({
-  id: `pool-${n}`, name: `Pool ${n}`, api: "litellm", patterns: [], limit: 1, privacy: "shared", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
+  id: `pool-${n}`, name: `Pool ${n}`, api: "openai", patterns: [], limit: 1, privacy: "shared", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
 });
 const newHost = (n: number): HostConfig => ({ id: `host-${n}`, name: `Host ${n}`, engine: "llamacpp", baseUrl: "http://", declaredSlots: 1 });
 
@@ -77,8 +77,24 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
   );
 };
 
+// Where a credential name points: shown under an endpoint or backend so it's clear whether a key is sent.
+const CredentialNote = ({ name, credentials }: { name?: string; credentials: CredentialSummary[] }) => {
+  if (!name) return <span style={MUTED}>No credential: requests are sent without a key. Add one in the plugin's config (Credential 1–4) and enter its name here.</span>;
+  const c = credentials.find((x) => x.name === name);
+  if (!c) return <span style={{ color: "#ef4444", fontSize: 12 }}>No credential named “{name}” in the plugin's config (Credential 1–4).</span>;
+  return <span style={MUTED}>Sends <code>{c.header}: {c.scheme ? `${c.scheme} ` : ""}{c.hasToken ? "••••" : "(no token yet)"}</code> from {c.slot.replace("credential", "Credential ")}.</span>;
+};
+
+const CredentialInput = ({ value, credentials, onChange }: { value?: string; credentials: CredentialSummary[]; onChange: (v: string | undefined) => void }) => (
+  <select style={inputStyle} value={value ?? ""} onChange={(e) => onChange(e.target.value || undefined)}>
+    <option value="">None</option>
+    {credentials.map((c) => <option key={c.slot} value={c.name}>{c.name}</option>)}
+    {value && !credentials.some((c) => c.name === value) ? <option value={value}>{value} (not set up)</option> : null}
+  </select>
+);
+
 // "Load models": lists what the pool's API offers; ticking a model adds it to the pool (exact name), unticking removes it.
-const ModelPicker = ({ pool, api, companyId, onChange }: { pool: PoolConfig; api: ApiInfo; companyId: string; onChange: (p: Partial<PoolConfig>) => void }) => {
+const ModelPicker = ({ pool, api, prefix, companyId, onChange }: { pool: PoolConfig; api: ApiInfo; prefix: string; companyId: string; onChange: (p: Partial<PoolConfig>) => void }) => {
   const list = usePluginAction("list-api-models");
   const [models, setModels] = useState<string[] | null>(null);
   const [source, setSource] = useState("");
@@ -88,7 +104,7 @@ const ModelPicker = ({ pool, api, companyId, onChange }: { pool: PoolConfig; api
   const load = async () => {
     setLoading(true);
     setProblem(undefined);
-    const r = (await list({ companyId, api: api.kind }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string };
+    const r = (await list({ companyId, pool: { api: api.kind, patterns: pool.patterns, endpoint: pool.endpoint } }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string };
     setLoading(false);
     if (r.ok) {
       setModels(r.models ?? []);
@@ -96,17 +112,17 @@ const ModelPicker = ({ pool, api, companyId, onChange }: { pool: PoolConfig; api
     } else setProblem(r.error ?? "Couldn't load models");
   };
   const lines = pool.patterns.filter((p) => p.trim());
-  const full = (id: string) => addPrefix(api.kind, id);
+  const full = (id: string) => addPrefix(prefix, id);
   const toggle = (id: string) => {
     const name = full(id);
     onChange({ patterns: lines.includes(name) ? lines.filter((p) => p !== name) : [...lines, name] });
   };
   const shown = (models ?? []).filter((m) => m.toLowerCase().includes(filter.toLowerCase()));
-  if (api.kind === "other") return null;
+  if (api.listing === "none") return null;
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <Button onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : models ? `Reload ${api.label} models` : `Load models from ${api.label}`}</Button>
+        <Button onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : models ? "Reload models" : `Load models from ${api.label}`}</Button>
         {models ? <Button onClick={() => setModels(null)}>Hide list</Button> : null}
         {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
       </div>
@@ -136,7 +152,7 @@ const ModelPicker = ({ pool, api, companyId, onChange }: { pool: PoolConfig; api
   );
 };
 
-const HostRow = ({ host, poolId, companyId, auth, error, onChange, onRemove }: { host: HostConfig; poolId: string; companyId: string; auth?: AuthSlotSummary; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
+const HostRow = ({ host, poolId, companyId, credentials, error, onChange, onRemove }: { host: HostConfig; poolId: string; companyId: string; credentials: CredentialSummary[]; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
   const inspect = usePluginAction("inspect-host");
   const [report, setReport] = useState<InspectHostResult | null>(null);
   const [problem, setProblem] = useState<string>();
@@ -154,7 +170,7 @@ const HostRow = ({ host, poolId, companyId, auth, error, onChange, onRemove }: {
   };
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr 1.6fr 2.2fr 0.6fr auto auto", gap: 8, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "0.9fr 1.2fr 1.5fr 2fr 0.6fr 1.1fr auto auto", gap: 8, alignItems: "start" }}>
         <Field label="Id" error={error("id")}><input style={inputStyle} value={host.id} onChange={(e) => onChange({ id: e.target.value })} /></Field>
         <Field label="Name" error={error("name")}><input style={inputStyle} value={host.name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
         <Field label="Server type" error={error("engine")}>
@@ -166,29 +182,30 @@ const HostRow = ({ host, poolId, companyId, auth, error, onChange, onRemove }: {
         <Field label="Slots" error={error("declaredSlots")}>
           <input style={inputStyle} type="number" min={1} value={host.declaredSlots} onChange={(e) => onChange({ declaredSlots: Number(e.target.value) })} />
         </Field>
+        <Field label="Credential" error={error("credential")}><CredentialInput value={host.credential} credentials={credentials} onChange={(credential) => onChange({ credential })} /></Field>
         <div style={{ paddingTop: 20 }}><Button onClick={() => void check()} disabled={checking}>{checking ? "Checking…" : "Check server"}</Button></div>
         <div style={{ paddingTop: 20 }}><Button kind="danger" onClick={onRemove}>Remove</Button></div>
       </div>
-      <span style={MUTED}>
-        {auth
-          ? <>Auth: <code>{auth.header}: {auth.scheme ? `${auth.scheme} ` : ""}{auth.hasToken ? "••••" : "(no token yet)"}</code> from plugin config “{auth.slot.replace("serverAuth", "Server auth ")}”.</>
-          : <>No auth. If this backend needs a key, add it in the plugin's config under Server auth 1–4 with Server id <code>{host.id || "…"}</code>.</>}
-      </span>
+      <CredentialNote name={host.credential} credentials={credentials} />
       {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
       {report ? <ServerReport report={report} /> : null}
     </div>
   );
 };
 
-const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; companyId: string; auth: AuthSlotSummary[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+const PoolCard = ({ pool, companyId, credentials, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; credentials: CredentialSummary[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
   const setHost = (k: number, patch: Partial<HostConfig>) => onChange({ hosts: pool.hosts.map((h, j) => (j === k ? { ...h, ...patch } : h)) });
   const api = apiInfo(pool.api ?? inferApi(pool.patterns.filter((p) => p.trim())));
-  // Switching API keeps the names typed and moves them under the new API's prefix.
-  const switchApi = (kind: ApiKind) => onChange({ api: kind, patterns: pool.patterns.map((p) => (p.trim() ? addPrefix(kind, stripPrefix(api.kind, p)) : p)) });
+  const prefix = poolPrefix({ api: api.kind, prefix: pool.prefix });
+  // Changing the prefix (or the API's suggested one) keeps the names typed and moves them under the new prefix.
+  const reprefix = (next: string) => pool.patterns.map((p) => (p.trim() ? addPrefix(next, stripPrefix(prefix, p)) : p));
+  const switchApi = (kind: ApiKind) => onChange({ api: kind, prefix: undefined, patterns: reprefix(apiInfo(kind).defaultPrefix) });
+  const setPrefix = (next: string) => onChange({ prefix: next, patterns: reprefix(next) });
+  const setEndpoint = (patch: Partial<NonNullable<PoolConfig["endpoint"]>>) => onChange({ endpoint: { ...pool.endpoint, ...patch } });
   return (
     <Card>
       <header style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -212,18 +229,45 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
         </Field>
       </div>
 
-      <Field label="API" error={err("api")}>
-        <Choice value={api.kind} onChange={(kind: ApiKind) => switchApi(kind)} options={APIS.map((a) => ({ value: a.kind, label: a.label, hint: a.hint }))} />
-      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 12 }}>
+        <Field label="API" hint={api.hint} error={err("api")}>
+          <select style={inputStyle} value={api.kind} onChange={(e) => switchApi(e.target.value as ApiKind)}>
+            {(["gateway", "cloud", "local", "names"] as const).map((group) => (
+              <optgroup key={group} label={{ gateway: "Proxies and gateways", cloud: "Cloud APIs", local: "Local engines (checked directly)", names: "Other" }[group]}>
+                {APIS.filter((a) => a.group === group).map((a) => <option key={a.kind} value={a.kind}>{a.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </Field>
+        <Field label="Model name prefix" hint={`How agents start this API's model names${api.defaultPrefix ? `; suggested ${api.defaultPrefix}` : ""}. Leave empty for full names.`} error={err("prefix")}>
+          <input style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} value={prefix} placeholder="none" onChange={(e) => setPrefix(e.target.value)} />
+        </Field>
+      </div>
 
-      <Field label={api.prefix ? `${api.label} models in this pool (after ${api.prefix})` : "Models in this pool (full names)"} error={err("patterns")}
-        hint={api.prefix
-          ? `One per line, without the ${api.prefix} prefix: e.g. ${api.kind === "litellm" ? "vm or pc-omo-local-*" : "*-free"}. A task counts here when its model is ${api.prefix} plus a line (* matches anything, ? one character). This only matches names; it changes nothing in ${api.label}.`
-          : "One per line, the model name exactly as agents use it (* matches anything, ? one character)."}>
-        <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(api.kind, p)).join("\n")}
-          onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(api.kind, line) : line)) })} />
+      {api.group !== "names" ? (
+        <div style={{ display: "grid", gridTemplateColumns: api.group === "local" ? "2fr 1fr 0.6fr" : "2fr 1fr", gap: 12 }}>
+          <Field label={api.group === "local" ? "Server address" : "API address"} error={err("endpoint.baseUrl")}
+            hint={api.group === "local" ? "The engine itself: the plugin checks its health and load here." : api.defaultBaseUrl ? `Leave empty for ${api.defaultBaseUrl}. Used by Load models.` : "Used by Load models; the plugin only reads from it."}>
+            <input style={inputStyle} value={pool.endpoint?.baseUrl ?? ""} placeholder={api.placeholderUrl} onChange={(e) => setEndpoint({ baseUrl: e.target.value || undefined })} />
+          </Field>
+          <Field label="Credential" error={err("endpoint.credential")}>
+            <CredentialInput value={pool.endpoint?.credential} credentials={credentials} onChange={(credential) => setEndpoint({ credential })} />
+          </Field>
+          {api.group === "local" ? (
+            <Field label="Slots" hint="If it doesn't report them" error={err("endpoint.slots")}>
+              <input style={inputStyle} type="number" min={1} value={pool.endpoint?.slots ?? 1} onChange={(e) => setEndpoint({ slots: Number(e.target.value) })} />
+            </Field>
+          ) : null}
+          <div style={{ gridColumn: "1 / -1" }}><CredentialNote name={pool.endpoint?.credential} credentials={credentials} /></div>
+        </div>
+      ) : null}
+
+      <Field label={prefix ? `Models in this pool (after ${prefix})` : "Models in this pool (full names)"} error={err("patterns")}
+        hint={`One per line${prefix ? `, without the ${prefix} prefix` : ", exactly as agents name them"}. A task counts here when its model matches a line (* matches anything, ? one character). This only matches names; it changes nothing in the API.`}>
+        <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(prefix, p)).join("\n")}
+          onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(prefix, line) : line)) })} />
       </Field>
-      <ModelPicker pool={pool} api={api} companyId={companyId} onChange={onChange} />
+      <ModelPicker pool={pool} api={api} prefix={prefix} companyId={companyId} onChange={onChange} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mode" error={err("mode")}>
@@ -240,14 +284,17 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
         </Field>
       </div>
 
-      {api.hasBackends ? <div style={{ display: "grid", gap: 8 }}>
-        <SectionTitle title="Backends behind these models (read-only)" hint="Optional. The servers LiteLLM sends these models to, for example the llama.cpp server on CT118. The plugin only reads their health and busy slots, so the pool stops releasing work while they are down or busy with work from outside Paperclip; Check server shows what one is running now. It never changes LiteLLM or the servers, so keep this list in step with LiteLLM's model config." />
-        {pool.hosts.length === 0 ? <span style={MUTED}>No backends listed: only the limit above applies (typical for cloud models).</span> : null}
+      {api.group === "gateway" || api.group === "names" ? <div style={{ display: "grid", gap: 8 }}>
+        <SectionTitle title="Backends behind these models (read-only)" hint="Optional. The model servers this API sends these models to (for a proxy, the backends in its config). The plugin only reads their health and busy slots, so the pool stops releasing work while they are down or busy with work from outside Paperclip; Check server shows what one is running now. It never changes the API or the servers, so keep this list in step with the API's own config." />
+        {pool.hosts.length === 0 ? <span style={MUTED}>No backends listed: only the limit above applies.</span> : null}
         {pool.hosts.map((h, k) => (
-          <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} auth={auth.find((a) => a.server === h.id)} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
+          <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} credentials={credentials} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
         ))}
         <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add backend</Button></div>
-      </div> : <span style={MUTED}>{api.label} is a cloud API, so there are no backends to watch: only the limit above applies.{pool.hosts.length ? " Remove this pool's backends or switch its API before saving." : ""}</span>}
+      </div> : <span style={MUTED}>
+        {api.group === "local" ? `${api.label} is checked directly at the server address above, so there are no separate backends.` : `${api.label} is a cloud API, so there are no backends to watch: only the limit above applies.`}
+        {pool.hosts.length ? " Remove this pool's backends or switch its API before saving." : ""}
+      </span>}
     </Card>
   );
 };
@@ -255,7 +302,7 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
 // H4: edit pools and their servers. Per-company settings (queue label, alert task, secret refs) are on the host's plugin config form.
 export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   const companyId = context.companyId;
-  const config = usePluginData<{ pools: PoolConfig[]; auth: AuthSlotSummary[] }>("pools-config", { companyId });
+  const config = usePluginData<{ pools: PoolConfig[]; credentials: CredentialSummary[] }>("pools-config", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
@@ -305,7 +352,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       <div style={{ display: "grid", gap: 4 }}>
         <strong style={{ fontSize: 18 }}>Model capacity pools</strong>
         <span style={{ ...MUTED, fontSize: 13 }}>
-          These pools apply to this company only. Each pool belongs to one model API (LiteLLM, OpenCode, OpenRouter or other), the part an agent's model name starts with, like litellm/vm. A pool groups models from that API and caps how many of this company's agent runs can use them at once. For self-hosted APIs like LiteLLM it can also watch the backend servers the API sends work to. Extra tasks wait in a queue and start in priority order when a slot frees.
+          These pools apply to this company only. Each pool covers one model API: a proxy (such as LiteLLM or any OpenAI-compatible endpoint), a cloud API, or a local engine (Ollama, LM Studio, oMLX, vLLM, llama.cpp). It groups that API's models and caps how many of this company's agent runs can use them at once. A local engine is checked directly; for a proxy, the pool can also watch the backends behind it. Extra tasks wait in a queue and start in priority order when a slot frees.
           New pools start in <strong>Observe</strong>: the plugin only logs what it would hold until you switch the pool to <strong>Enforce</strong>.
         </span>
       </div>
@@ -317,7 +364,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       ) : null}
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Add one to start.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} auth={config.data?.auth ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} credentials={config.data?.credentials ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>

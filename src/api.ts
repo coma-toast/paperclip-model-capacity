@@ -4,7 +4,7 @@ import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
 import { APIS, inferApi, type ApiKind } from "./apis.js";
-import { summarizeAuth } from "./auth.js";
+import { summarizeCredentials } from "./auth.js";
 import { listApiModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
@@ -147,10 +147,10 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   // The settings page edits one company's pools, with their own ids (not the scheduler's keys).
   ctx.data.register("pools-config", async (params) => {
     const companyId = companyOf(params);
-    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get(), auth: [] };
+    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get(), credentials: [] };
     return {
       pools: await store.companyPools(companyId).get(), heldPools: await store.companyHeldPools(companyId).get(), exemptions: await store.exemptions.get(),
-      auth: summarizeAuth(await ctx.config.get(companyId)),
+      credentials: summarizeCredentials(await ctx.config.get(companyId)),
     };
   });
 
@@ -181,12 +181,12 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     }
     if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "The address must start with http:// or https://" };
     const companyId = text(params.companyId) ?? context.companyId ?? undefined;
-    const serverId = text((params.host as { id?: unknown } | undefined)?.id);
+    const credential = text((params.host as { credential?: unknown } | undefined)?.credential);
     let headers: Record<string, string> | undefined;
     try {
-      headers = companyId && serverId ? await runtime.serverAuth.headersFor(companyId, serverId) : undefined;
+      headers = companyId ? await runtime.credentials.headersFor(companyId, credential) : undefined;
     } catch (e) {
-      return { ok: false, error: `Couldn't read this server's auth secret: ${e instanceof Error ? e.message : String(e)}` };
+      return { ok: false, error: `Couldn't read credential "${credential}": ${e instanceof Error ? e.message : String(e)}` };
     }
     const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init), headers });
     const snapshot = runtime.snapshot();
@@ -201,10 +201,10 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   ctx.actions.register("list-api-models", async (params, context) => {
     if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can load models" };
     const companyId = text(params.companyId) ?? context.companyId ?? undefined;
-    const api = params.api as ApiKind;
+    const pool = (params.pool ?? {}) as Pick<PoolConfig, "api" | "patterns" | "endpoint">;
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
-    if (!APIS.some((a) => a.kind === api)) return { ok: false, error: "Pick the pool's API first" };
-    return listApiModels(ctx, runtime.serverAuth, companyId, api);
+    if (!APIS.some((a) => a.kind === pool.api)) return { ok: false, error: "Pick the pool's API first" };
+    return listApiModels(ctx, runtime.credentials, companyId, { ...pool, patterns: Array.isArray(pool.patterns) ? pool.patterns : [] });
   });
 
   boardAction("save-pools", async (params, _userId, companyId) => {
