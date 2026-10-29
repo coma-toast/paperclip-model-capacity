@@ -159,7 +159,10 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     if (changed) await store.released.set(released);
   };
 
-  return { execute, reconcileHolds, confirmWakes, ensureBlocker };
+  // F1: release one held task now, ignoring the limit and the pool's mode.
+  const releaseNow = (issueId: string, companyId: string, poolId: string) => release({ kind: "release", issueId, companyId, poolId, reason: "manual" });
+
+  return { execute, reconcileHolds, confirmWakes, ensureBlocker, releaseNow };
 };
 
 export type Executor = ReturnType<typeof createExecutor>;

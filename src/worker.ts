@@ -1,5 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
+import { registerApi } from "./api.js";
 import manifest from "./manifest.js";
 import { createRuntime, type Runtime } from "./runtime.js";
 
@@ -10,6 +11,7 @@ const plugin = definePlugin({
   async setup(ctx) {
     runtime = createRuntime(ctx);
     runtime.start();
+    registerApi(ctx, runtime);
     ctx.data.register("health", async () => ({ status: "ok", ...runtime?.health(), checkedAt: new Date().toISOString() }));
   },
 

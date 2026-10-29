@@ -31,6 +31,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.read",
     "database.namespace.migrate",
     "ui.dashboardWidget.register",
+    "ui.page.register",
+    "instance.settings.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -52,12 +54,9 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   ui: {
     slots: [
-      {
-        type: "dashboardWidget",
-        id: "health-widget",
-        displayName: "Model capacity",
-        exportName: "DashboardWidget",
-      },
+      { type: "dashboardWidget", id: "capacity-widget", displayName: "Model capacity", exportName: "DashboardWidget" },
+      { type: "page", id: "capacity-page", displayName: "Model capacity", exportName: "CapacityPage", routePath: "model-capacity" },
+      { type: "settingsPage", id: "capacity-settings", displayName: "Model capacity", exportName: "SettingsPage" },
     ],
   },
 };
