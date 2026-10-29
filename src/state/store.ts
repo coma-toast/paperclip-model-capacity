@@ -2,6 +2,7 @@ import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
 import { HISTORY_MAX_PER_DAY, STATE_SCHEMA_VERSION } from "../constants.js";
 import type { Action, AlertEvent, HeldTask, HostStatus, OverrideRecord, PoolConfig, ReleasedTask } from "../types.js";
+import type { BackendUsage } from "../usage.js";
 
 export interface HistoryEntry {
   at: string;
@@ -106,6 +107,8 @@ export const createStore = (state: PluginStateClient) => {
     companyPools: (companyId: string) => blob<PoolConfig[]>(state, instanceKey(`pools:${companyId}`), () => []),
     companyHeldPools: (companyId: string) => blob<string[]>(state, instanceKey(`heldPools:${companyId}`), () => []),
     hosts: blob<Record<string, HostStatus>>(state, instanceKey("hosts"), () => ({})),
+    // Latest usage sample per backend id, for one company.
+    companyUsage: (companyId: string) => blob<Record<string, BackendUsage>>(state, instanceKey(`usage:${companyId}`), () => ({})),
     holds: blob<Record<string, HeldTask>>(state, instanceKey("holds"), () => ({})),
     released: blob<Record<string, ReleasedTask>>(state, instanceKey("released"), () => ({})),
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),

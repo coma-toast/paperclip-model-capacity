@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
-import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
+import { DEFAULT_PROBE_INTERVAL_MS, DEFAULT_USAGE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { createBackendAuth, readBackends } from "./backends.js";
 import { createExecutor } from "./executor.js";
@@ -12,11 +12,14 @@ import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, createAgentCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
 import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
+import { sampleUsage, type BackendUsage } from "./usage.js";
 
 export interface RuntimeOptions {
   debounceMs?: number;
   // 0 turns the probe loop off (tests).
   probeIntervalMs?: number;
+  // 0 turns usage sampling off; defaults to off when probing is off.
+  usageIntervalMs?: number;
   readRuns?: RunReader;
   now?: () => Date;
 }
@@ -59,6 +62,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   let chain: Promise<void> = Promise.resolve();
   let debounce: ReturnType<typeof setTimeout> | undefined;
   let probeTimer: ReturnType<typeof setInterval> | undefined;
+  let usageTimer: ReturnType<typeof setInterval> | undefined;
   let lastCycleAt: string | undefined;
   let lastError: string | undefined;
   let lastSnapshot: Snapshot | undefined;
@@ -114,6 +118,25 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     }
   };
 
+  // Spend, credits and busy slots for every backend of every company with pools, for the widget (GET-only).
+  const sampleCompany = async (companyId: string) => {
+    const samples = await Promise.all((await backendsFor(companyId)).map(async (b): Promise<BackendUsage> => {
+      let headers: Record<string, string> | undefined;
+      try {
+        headers = await backendAuth.headersFor(companyId, b.id);
+      } catch (e) {
+        return { backendId: b.id, sampledAt: now().toISOString(), ok: false, meters: [], notes: [], error: `Couldn't read the key: ${errText(e)}` };
+      }
+      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, now });
+    }));
+    await store.companyUsage(companyId).set(Object.fromEntries(samples.map((s) => [s.backendId, s])));
+  };
+  const usageTick = async () => {
+    for (const c of await companiesWithPools().catch(() => [])) {
+      await sampleCompany(c.id).catch((e) => ctx.logger.warn("Model capacity usage sample failed", { companyId: c.id, error: errText(e) }));
+    }
+  };
+
   const start = () => {
     ctx.jobs.register("sweep", async () => cycle("sweep"));
     ctx.jobs.register("prune", async () => {
@@ -140,10 +163,17 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       probeTimer = setInterval(() => outsideInvocation(() => void probeTick()), interval);
       probeTimer.unref?.();
     }
+    const usageInterval = opts.usageIntervalMs ?? (interval > 0 ? DEFAULT_USAGE_INTERVAL_MS : 0);
+    if (usageInterval > 0) {
+      usageTimer = setInterval(() => outsideInvocation(() => void usageTick()), usageInterval);
+      usageTimer.unref?.();
+      setTimeout(() => outsideInvocation(() => void usageTick()), 5_000).unref?.();
+    }
   };
 
   const stop = async () => {
     clearInterval(probeTimer);
+    clearInterval(usageTimer);
     clearTimeout(debounce);
     await chain;
   };
@@ -156,7 +186,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, backendAuth, backendsFor, snapshot: () => lastSnapshot };
+  return { start, stop, cycle, schedule, probeTick, usageTick, sampleCompany, idle, health, store, executor, backendAuth, backendsFor, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;

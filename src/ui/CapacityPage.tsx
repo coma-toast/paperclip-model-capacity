@@ -2,11 +2,12 @@ import { useState } from "react";
 import { DataTable, MetricCard, StatusBadge, usePluginAction, usePluginData, usePluginToast, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import { apiInfo } from "../apis.js";
-import type { PoolSummary, QueueRow } from "../api.js";
+import type { BackendUsageRow, PoolSummary, QueueRow } from "../api.js";
 import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
 import { Button, inputStyle } from "./components/form.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
+import { BackendUsageTable } from "./components/usage.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
 
@@ -21,7 +22,7 @@ const describe = (e: HistoryEntry) => {
 // H2: pools and hosts, the queue with controls, recent alerts and today's decisions.
 export const CapacityPage = ({ context }: PluginPageProps) => {
   const scope = { companyId: context.companyId };
-  const summary = usePluginData<{ pools: PoolSummary[]; lastCycleAt?: string }>("capacity-summary", scope);
+  const summary = usePluginData<{ pools: PoolSummary[]; backends?: BackendUsageRow[]; lastCycleAt?: string }>("capacity-summary", scope);
   const queue = usePluginData<{ rows: QueueRow[] }>("queue", scope);
   const alerts = usePluginData<{ active: AlertEvent[]; recent: AlertEvent[] }>("alerts", scope);
   const history = usePluginData<{ entries: HistoryEntry[] }>("history", scope);
@@ -55,6 +56,7 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
         <MetricCard label="Waiting" value={pools.reduce((n, p) => n + p.queued, 0)} />
         <MetricCard label="Open alerts" value={alerts.data?.active.length ?? 0} />
       </div>
+      <BackendUsageTable rows={summary.data?.backends ?? []} companyId={context.companyId} onRefreshed={() => summary.refresh()} />
       {summary.data && pools.length === 0 ? <div>No pools for this company yet. <EditPoolsLink companyPrefix={context.companyPrefix} label="Set up pools" /></div> : null}
 
       <section>

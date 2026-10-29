@@ -11,6 +11,7 @@ import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
 import { validatePools, type FieldError } from "./settings.js";
 import type { Action, AlertEvent, EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
+import type { BackendUsage } from "./usage.js";
 
 export interface PoolSummary {
   // The scheduler's key, "<companyId>:<poolId>"; pass it back to set-limit, hold-pool and resume-pool.
@@ -29,6 +30,15 @@ export interface PoolSummary {
   onHold: boolean;
   openAlerts: number;
   hosts: { id: string; name: string; engine: string; up: boolean; slotsTotal?: number; slotsBusy?: number; lastProbeAt?: string }[];
+}
+
+// A company's backend with its latest usage sample and the pools that use or watch it (widget and page).
+export interface BackendUsageRow {
+  id: string;
+  name: string;
+  type: ApiKind;
+  pools: string[];
+  usage?: BackendUsage;
 }
 
 export interface QueueRow {
@@ -105,12 +115,21 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     };
   };
 
+  const backendRows = async (companyId: string): Promise<BackendUsageRow[]> => {
+    const [backends, pools, usage] = await Promise.all([runtime.backendsFor(companyId), store.companyPools(companyId).get(), store.companyUsage(companyId).get()]);
+    return backends.map((b) => ({
+      id: b.id, name: b.name, type: b.type, usage: usage[b.id],
+      pools: pools.filter((p) => p.backend === b.id || p.watch?.includes(b.id)).map((p) => p.name),
+    }));
+  };
+
   ctx.data.register("capacity-summary", async (params) => {
     const companyId = companyOf(params);
     const snapshot = await currentSnapshot(companyId);
     const alerts = Object.values((await store.alerts.get()).active).filter((a) => !companyId || !a.companyId || a.companyId === companyId);
     return {
       pools: summarize(snapshot, alerts.flatMap((a) => (a.poolId ? [a.poolId] : [])), now()),
+      backends: companyId ? await backendRows(companyId) : [],
       lastCycleAt: runtime.health().lastCycleAt, lastError: runtime.health().lastError, diagnostics: snapshot.diagnostics,
     };
   });
@@ -232,6 +251,15 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     } catch (e) {
       return { ok: false, error: `Couldn't read ${backend.name}'s key: ${errText(e)}` };
     }
+  });
+
+  // Samples the company's backends now instead of waiting for the next usage tick.
+  ctx.actions.register("refresh-usage", async (params, context) => {
+    if (!forUser(context)) return { ok: false, error: "Only board users can refresh usage" };
+    const companyId = companyFor(params, context);
+    if (!companyId) return { ok: false, error: "Open this from a company's dashboard" };
+    await runtime.sampleCompany(companyId);
+    return { ok: true };
   });
 
   ctx.actions.register("inspect-backend", async (params, context) => {
