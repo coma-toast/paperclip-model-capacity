@@ -1,5 +1,5 @@
 import { apiInfo } from "./apis.js";
-import { backendBaseUrl, backendPrefix, type Backend } from "./backends.js";
+import { backendBaseUrl, backendPrefix, probeBaseUrl, type Backend } from "./backends.js";
 import type { Store } from "./state/store.js";
 import type { HostConfig, PoolConfig } from "./types.js";
 
@@ -15,7 +15,7 @@ export const splitPoolKey = (key: string): { companyId: string; poolId: string }
 // A local-engine backend is a server the plugin can check; anything else isn't.
 export const backendHost = (b: Backend): HostConfig[] => {
   const info = apiInfo(b.type);
-  const baseUrl = backendBaseUrl(b);
+  const baseUrl = probeBaseUrl(b);
   if (info.group !== "local" || !info.engine || !baseUrl) return [];
   return [{ id: `backend~${b.id}`, name: b.name, engine: info.engine, baseUrl, declaredSlots: b.slots ?? 1, backendId: b.id }];
 };

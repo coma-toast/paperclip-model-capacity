@@ -2,7 +2,7 @@ import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { collectAgentModels } from "./agentModels.js";
 import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
-import { backendBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
+import { backendBaseUrl, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
 import { PRIORITY_RANK } from "./constants.js";
 import { listBackendModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
@@ -188,9 +188,9 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   // What a backend is running now (health, loaded models, slots) plus the Paperclip runs counted on a pool using it.
   const inspect = async (backend: Pick<Backend, "type" | "baseUrl">, headers: Record<string, string> | undefined) => {
     const info = apiInfo(backend.type);
-    const baseUrl = backendBaseUrl(backend);
+    const baseUrl = probeBaseUrl(backend);
     if (!baseUrl) return undefined;
-    return inspectHost(info.engine ?? "openai", { baseUrl: baseUrl.replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init), headers });
+    return inspectHost(info.engine ?? "openai", { baseUrl, fetch: (u, init) => ctx.http.fetch(u, init), headers });
   };
 
   // The Add/Edit backend form: checks a draft backend before it's saved. The key typed in the form is used for this

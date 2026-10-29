@@ -26,6 +26,8 @@ export interface BackendSummary extends Omit<Backend, "key"> {
 
 export const backendPrefix = (b: Pick<Backend, "type" | "prefix">) => b.prefix ?? apiInfo(b.type).defaultPrefix;
 export const backendBaseUrl = (b: Pick<Backend, "type" | "baseUrl">) => b.baseUrl?.trim() || apiInfo(b.type).defaultBaseUrl;
+// Health probes add their own /v1/... paths, so an address given as .../v1 (as cloud APIs document it) is trimmed.
+export const probeBaseUrl = (b: Pick<Backend, "type" | "baseUrl">) => backendBaseUrl(b).replace(/\/+$/, "").replace(/\/v1$/, "");
 
 export const readBackends = (config: Record<string, unknown>): Backend[] =>
   Array.isArray(config.backends) ? (config.backends as Backend[]).filter((b) => b && typeof b.id === "string" && typeof b.type === "string") : [];
