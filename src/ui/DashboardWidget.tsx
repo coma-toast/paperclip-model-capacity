@@ -15,7 +15,8 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
 
   if (loading && !data) return <Spinner />;
   if (error) return <div>Model capacity: {error.message}</div>;
-  if (!data?.pools.length) return <div>Model capacity: no pools for this company yet. Add them in Company settings → Model capacity.</div>;
+  // A company that hasn't set up pools isn't using the plugin, so the widget stays out of its dashboard.
+  if (!data?.pools.length) return null;
 
   return (
     <div style={{ display: "grid", gap: 6 }}>
