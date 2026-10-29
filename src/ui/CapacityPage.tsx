@@ -4,6 +4,7 @@ import { DataTable, MetricCard, StatusBadge, usePluginAction, usePluginData, use
 import type { PoolSummary, QueueRow } from "../api.js";
 import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
+import { Button, inputStyle } from "./components/form.js";
 import { HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
@@ -64,9 +65,9 @@ export const CapacityPage = (_props: PluginPageProps) => {
                 <td>{p.name} <span style={{ opacity: 0.6 }}>({p.privacy})</span></td>
                 <td>{p.inUse}/{p.available}</td>
                 <td>
-                  <input aria-label={`${p.name} limit`} type="number" min={0} style={{ width: 56 }} value={limits[p.id] ?? String(p.limit)}
+                  <input aria-label={`${p.name} limit`} type="number" min={0} style={{ ...inputStyle, width: 64, marginRight: 6 }} value={limits[p.id] ?? String(p.limit)}
                     onChange={(e) => setLimits({ ...limits, [p.id]: e.target.value })} />
-                  <button onClick={() => void run(() => actions.setLimit({ poolId: p.id, limit: Number(limits[p.id] ?? p.limit) }), `${p.name} limit saved`)}>Set</button>
+                  <Button onClick={() => void run(() => actions.setLimit({ poolId: p.id, limit: Number(limits[p.id] ?? p.limit) }), `${p.name} limit saved`)}>Set</Button>
                 </td>
                 <td>{p.queued}</td>
                 <td>{formatWait(p.oldestWaitSeconds)}</td>
@@ -74,8 +75,8 @@ export const CapacityPage = (_props: PluginPageProps) => {
                 <td><PoolBadges pool={p} /></td>
                 <td>
                   {p.onHold
-                    ? <button onClick={() => void run(() => actions.resumePool({ poolId: p.id }), `${p.name} resumed`)}>Resume</button>
-                    : <button onClick={() => void run(() => actions.holdPool({ poolId: p.id }), `${p.name} on hold`)}>Hold pool</button>}
+                    ? <Button onClick={() => void run(() => actions.resumePool({ poolId: p.id }), `${p.name} resumed`)}>Resume</Button>
+                    : <Button onClick={() => void run(() => actions.holdPool({ poolId: p.id }), `${p.name} on hold`)}>Hold pool</Button>}
                 </td>
               </tr>
             ))}
@@ -98,8 +99,8 @@ export const CapacityPage = (_props: PluginPageProps) => {
             {
               key: "issueId", header: "", render: (_v, row) => { const r = row as unknown as QueueRow; return (
                 <span style={{ display: "inline-flex", gap: 4 }}>
-                  <button onClick={() => void run(() => actions.releaseNow({ issueId: r.issueId }), "Released")}>Release now</button>
-                  <button disabled={r.position === 1} onClick={() => void run(() => actions.moveToFront({ issueId: r.issueId }), "Moved to front")}>Move to front</button>
+                  <Button onClick={() => void run(() => actions.releaseNow({ issueId: r.issueId }), "Released")}>Release now</Button>
+                  <Button disabled={r.position === 1} onClick={() => void run(() => actions.moveToFront({ issueId: r.issueId }), "Moved to front")}>Move to front</Button>
                 </span>
               ); },
             },
