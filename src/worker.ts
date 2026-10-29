@@ -26,7 +26,7 @@ const plugin = definePlugin({
     const errors: string[] = [];
     for (const [key, value] of Object.entries(config)) {
       if (!CONFIG_KEYS.includes(key)) errors.push(`${key}: unknown setting`);
-      else if (AUTH_SLOTS.includes(key as (typeof AUTH_SLOTS)[number])) {
+      else if (AUTH_SLOTS.includes(key as (typeof AUTH_SLOTS)[number]) || key === "apiEndpoints") {
         if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) errors.push(`${key}: must be an object`);
       } else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
     }

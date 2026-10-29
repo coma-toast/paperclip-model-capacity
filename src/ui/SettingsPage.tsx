@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { InspectHostResult } from "../api.js";
-import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiKind } from "../apis.js";
+import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiInfo, type ApiKind } from "../apis.js";
 import type { AuthSlotSummary } from "../auth.js";
+import { patternMatches } from "../scheduler/match.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
 
@@ -72,6 +73,65 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
           </span>
         ))}
       </div>
+    </div>
+  );
+};
+
+// "Load models": lists what the pool's API offers; ticking a model adds it to the pool (exact name), unticking removes it.
+const ModelPicker = ({ pool, api, companyId, onChange }: { pool: PoolConfig; api: ApiInfo; companyId: string; onChange: (p: Partial<PoolConfig>) => void }) => {
+  const list = usePluginAction("list-api-models");
+  const [models, setModels] = useState<string[] | null>(null);
+  const [source, setSource] = useState("");
+  const [problem, setProblem] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState("");
+  const load = async () => {
+    setLoading(true);
+    setProblem(undefined);
+    const r = (await list({ companyId, api: api.kind }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string };
+    setLoading(false);
+    if (r.ok) {
+      setModels(r.models ?? []);
+      setSource(r.source ?? "");
+    } else setProblem(r.error ?? "Couldn't load models");
+  };
+  const lines = pool.patterns.filter((p) => p.trim());
+  const full = (id: string) => addPrefix(api.kind, id);
+  const toggle = (id: string) => {
+    const name = full(id);
+    onChange({ patterns: lines.includes(name) ? lines.filter((p) => p !== name) : [...lines, name] });
+  };
+  const shown = (models ?? []).filter((m) => m.toLowerCase().includes(filter.toLowerCase()));
+  if (api.kind === "other") return null;
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Button onClick={() => void load()} disabled={loading}>{loading ? "Loading…" : models ? `Reload ${api.label} models` : `Load models from ${api.label}`}</Button>
+        {models ? <Button onClick={() => setModels(null)}>Hide list</Button> : null}
+        {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
+      </div>
+      {models ? (
+        <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 10, display: "grid", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input style={{ ...inputStyle, maxWidth: 280 }} placeholder="Filter models" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <span style={MUTED}>{shown.length} of {models.length} from {source}</span>
+          </div>
+          <div style={{ maxHeight: 240, overflowY: "auto", display: "grid", gap: 2 }}>
+            {shown.map((id) => {
+              const exact = lines.includes(full(id));
+              const covered = !exact && lines.some((p) => patternMatches(p, full(id)));
+              return (
+                <label key={id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={exact || covered} disabled={covered} onChange={() => toggle(id)} />
+                  <code>{id}</code>
+                  {covered ? <span style={MUTED}>already covered by a wildcard line</span> : null}
+                </label>
+              );
+            })}
+            {shown.length === 0 ? <span style={MUTED}>No models match.</span> : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -163,6 +223,7 @@ const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove 
         <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.map((p) => stripPrefix(api.kind, p)).join("\n")}
           onChange={(e) => onChange({ patterns: e.target.value.split("\n").map((line) => (line.trim() ? addPrefix(api.kind, line) : line)) })} />
       </Field>
+      <ModelPicker pool={pool} api={api} companyId={companyId} onChange={onChange} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mode" error={err("mode")}>

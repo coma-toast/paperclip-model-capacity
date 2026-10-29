@@ -3,8 +3,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
-import { inferApi, type ApiKind } from "./apis.js";
+import { APIS, inferApi, type ApiKind } from "./apis.js";
 import { summarizeAuth } from "./auth.js";
+import { listApiModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import { validatePools, type FieldError } from "./settings.js";
@@ -194,6 +195,16 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
       .filter((r) => poolId && r.poolId === poolId)
       .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
     return { ok: true, server, usedAuth: Boolean(headers), poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
+  });
+
+  // "Load models": what a pool's API offers, for picking models. Board-only because it calls out to the API.
+  ctx.actions.register("list-api-models", async (params, context) => {
+    if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can load models" };
+    const companyId = text(params.companyId) ?? context.companyId ?? undefined;
+    const api = params.api as ApiKind;
+    if (!companyId) return { ok: false, error: "Open this from a company's settings" };
+    if (!APIS.some((a) => a.kind === api)) return { ok: false, error: "Pick the pool's API first" };
+    return listApiModels(ctx, runtime.serverAuth, companyId, api);
   });
 
   boardAction("save-pools", async (params, _userId, companyId) => {
