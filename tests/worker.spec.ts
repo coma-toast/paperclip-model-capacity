@@ -94,6 +94,14 @@ describe("invocation context (live-install bug, 2026-10-29)", () => {
     harness.ctx.companies.list = original;
     await expect(createCompanyLister({ ...harness.ctx, companies: { ...harness.ctx.companies, list: async () => { throw new Error("x"); } } })()).rejects.toThrow("x");
   });
+
+  it("a restarted worker falls back to the company list saved in state", async () => {
+    const { harness, runtime } = await setup();
+    const { createCompanyLister } = await import("../src/snapshot.js");
+    await createCompanyLister(harness.ctx, runtime.store)();
+    const refused = { ...harness.ctx, companies: { ...harness.ctx.companies, list: async () => { throw new Error("invocation scope"); } } };
+    expect((await createCompanyLister(refused, runtime.store)()).map((c) => c.id)).toEqual(["c1"]);
+  });
 });
 
 describe("restart (AC9 part 1)", () => {

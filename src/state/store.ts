@@ -107,6 +107,10 @@ export const createStore = (state: PluginStateClient) => {
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
     heldPools: blob<string[]>(state, instanceKey("heldPools"), () => []),
     exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
+    // Keys of unapplied decisions made last cycle, so history records each one once.
+    observed: blob<string[]>(state, instanceKey("observed"), () => []),
+    // The last company list that companies.list returned, for when the host refuses a proactive call.
+    companies: blob<{ id: string; name: string }[]>(state, instanceKey("companies"), () => []),
     alerts: blob<AlertState>(state, instanceKey("alerts"), () => ({ active: {}, recent: [] })),
     queueBlockers: (companyId: string) => blob<Record<string, string>>(state, companyKey(companyId, "queueBlockers"), () => ({})),
     historyDays: () => historyIndex.get(),

@@ -96,6 +96,24 @@ describe("observe mode (C6)", () => {
   });
 });
 
+describe("history dedupe", () => {
+  it("records an observe-mode decision once while it repeats, and again after it stops and comes back", async () => {
+    const { exec, store, snap } = setup("observe");
+    for (let i = 0; i < 3; i++) await exec.execute([holdAction("t1")], snap);
+    await exec.execute([], snap);
+    await exec.execute([holdAction("t1")], snap);
+    expect((await store.history(NOW.slice(0, 10))).map((e) => e.action.kind)).toEqual(["hold", "hold"]);
+  });
+
+  it("still records every applied action", async () => {
+    const { exec, store, snap } = setup();
+    await exec.execute([holdAction("t1")], snap);
+    await exec.execute([releaseAction("t1")], snap);
+    await exec.execute([holdAction("t1")], snap);
+    expect((await store.history(NOW.slice(0, 10))).map((e) => [e.action.kind, e.applied])).toEqual([["hold", true], ["release", true], ["hold", true]]);
+  });
+});
+
 describe("blocker recreation (C1a)", () => {
   it("recreates a blocker closed as done and re-points held tasks", async () => {
     const { ctx, harness, exec, store, snap } = setup();

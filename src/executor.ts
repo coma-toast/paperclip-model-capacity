@@ -96,8 +96,15 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
 
   // Applies decide()'s actions. Observe-mode pools record the decision and change nothing (C6). Overflow, restore
   // (P2) and alerts (P1.10) are recorded here and handled elsewhere.
+  // Observe mode and alerts produce the same unapplied action every cycle while nothing changes; history records each
+  // once, until it stops being decided.
+  const repeatKey = (a: Action) =>
+    a.kind === "alert" ? `alert:${a.alert.kind}:${a.alert.subject}` : `${a.kind}:${"issueId" in a ? a.issueId : ""}:${"poolId" in a ? a.poolId : ""}`;
+
   const execute = async (actions: Action[], snapshot: Snapshot): Promise<HistoryEntry[]> => {
     const pools = new Map(snapshot.pools.map((p) => [p.id, p]));
+    const seenBefore = new Set(await store.observed.get());
+    const seenNow: string[] = [];
     const entries: HistoryEntry[] = [];
     for (const action of actions) {
       const poolId = action.kind === "alert" ? action.alert.poolId : action.kind === "overflow" ? action.fromPoolId : "poolId" in action ? action.poolId : undefined;
@@ -106,12 +113,18 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
       try {
         if (apply && action.kind === "hold") await hold(action, pool, snapshot);
         if (apply && action.kind === "release") await release(action);
+        if (!apply) {
+          const key = repeatKey(action);
+          seenNow.push(key);
+          if (seenBefore.has(key)) continue;
+        }
         entries.push({ at: now().toISOString(), applied: apply, action });
       } catch (e) {
         ctx.logger.warn("Model capacity action failed", { kind: action.kind, poolId, error: errText(e) });
         entries.push({ at: now().toISOString(), applied: false, action });
       }
     }
+    await store.observed.set(seenNow);
     if (entries.length) await store.appendHistory(entries);
     return entries;
   };
