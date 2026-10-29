@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
+import type { InspectHostResult } from "../api.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
 
@@ -26,22 +27,90 @@ const newPool = (n: number): PoolConfig => ({
 });
 const newHost = (n: number): HostConfig => ({ id: `host-${n}`, name: `Host ${n}`, engine: "llamacpp", baseUrl: "http://", declaredSlots: 1 });
 
-const HostRow = ({ host, error, onChange, onRemove }: { host: HostConfig; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => (
-  <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr 1.6fr 2.2fr 0.6fr auto", gap: 8, alignItems: "start" }}>
-    <Field label="Id" error={error("id")}><input style={inputStyle} value={host.id} onChange={(e) => onChange({ id: e.target.value })} /></Field>
-    <Field label="Name" error={error("name")}><input style={inputStyle} value={host.name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
-    <Field label="Server type" error={error("engine")}>
-      <select style={inputStyle} value={host.engine} onChange={(e) => onChange({ engine: e.target.value as EngineKind })}>
-        {ENGINES.map((en) => <option key={en.value} value={en.value}>{en.label}</option>)}
-      </select>
-    </Field>
-    <Field label="Address" error={error("baseUrl")}><input style={inputStyle} value={host.baseUrl} placeholder="http://host:8080" onChange={(e) => onChange({ baseUrl: e.target.value })} /></Field>
-    <Field label="Slots" error={error("declaredSlots")}>
-      <input style={inputStyle} type="number" min={1} value={host.declaredSlots} onChange={(e) => onChange({ declaredSlots: Number(e.target.value) })} />
-    </Field>
-    <div style={{ paddingTop: 20 }}><Button kind="danger" onClick={onRemove}>Remove</Button></div>
-  </div>
-);
+const since = (iso?: string) => {
+  if (!iso) return "";
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+};
+
+// The result of "Check server": what the server says it runs, and the Paperclip runs counted on this pool.
+const ServerReport = ({ report }: { report: InspectHostResult }) => {
+  const { server, poolRuns, countedAt } = report;
+  return (
+    <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 12, display: "grid", gap: 10, fontSize: 13 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Pill tone={server.up ? "ok" : "warn"}>{server.up ? "Answering" : "Not answering"}</Pill>
+        <span>{server.summary}</span>
+        {server.error ? <span style={{ color: "#ef4444" }}>{server.error}</span> : null}
+      </div>
+      {server.slots?.length ? (
+        <div style={{ display: "grid", gap: 2 }}>
+          <strong style={{ fontSize: 12 }}>Slots</strong>
+          {server.slots.map((sl) => (
+            <span key={sl.id}>Slot {sl.id}: {sl.busy ? <strong>busy</strong> : "idle"}{sl.detail ? <span style={MUTED}> · {sl.detail}</span> : null}</span>
+          ))}
+        </div>
+      ) : null}
+      {server.requests ? <span>Requests: {server.requests.running} running, {server.requests.waiting ?? 0} waiting</span> : null}
+      {server.models.length ? (
+        <div style={{ display: "grid", gap: 2 }}>
+          <strong style={{ fontSize: 12 }}>Models</strong>
+          {server.models.map((m) => (
+            <span key={m.name}><code>{m.name}</code>{m.state ? <span style={MUTED}> · {m.state}</span> : null}{m.detail ? <span style={MUTED}> · {m.detail}</span> : null}</span>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "grid", gap: 2 }}>
+        <strong style={{ fontSize: 12 }}>Paperclip runs counted on this pool{countedAt ? ` (as of ${new Date(countedAt).toLocaleTimeString()})` : ""}</strong>
+        {poolRuns.length === 0 ? <span style={MUTED}>None. Save the pool first if you just created it.</span> : poolRuns.map((r) => (
+          <span key={r.runId}>
+            {r.agentName ?? "Agent"} · {r.issueIdentifier ?? "no task"} · <code>{r.model ?? "?"}</code>
+            <span style={MUTED}> · {r.status}{r.startedAt ? ` for ${since(r.startedAt)}` : ""}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const HostRow = ({ host, poolId, error, onChange, onRemove }: { host: HostConfig; poolId: string; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
+  const inspect = usePluginAction("inspect-host");
+  const [report, setReport] = useState<InspectHostResult | null>(null);
+  const [problem, setProblem] = useState<string>();
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    setProblem(undefined);
+    const r = (await inspect({ host, poolId }).catch((e: Error) => ({ ok: false, error: e.message }))) as InspectHostResult | { ok: false; error?: string };
+    setChecking(false);
+    if (r.ok) setReport(r);
+    else {
+      setReport(null);
+      setProblem(r.error ?? "Couldn't check the server");
+    }
+  };
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr 1.6fr 2.2fr 0.6fr auto auto", gap: 8, alignItems: "start" }}>
+        <Field label="Id" error={error("id")}><input style={inputStyle} value={host.id} onChange={(e) => onChange({ id: e.target.value })} /></Field>
+        <Field label="Name" error={error("name")}><input style={inputStyle} value={host.name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
+        <Field label="Server type" error={error("engine")}>
+          <select style={inputStyle} value={host.engine} onChange={(e) => onChange({ engine: e.target.value as EngineKind })}>
+            {ENGINES.map((en) => <option key={en.value} value={en.value}>{en.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Address" error={error("baseUrl")}><input style={inputStyle} value={host.baseUrl} placeholder="http://host:8080" onChange={(e) => onChange({ baseUrl: e.target.value })} /></Field>
+        <Field label="Slots" error={error("declaredSlots")}>
+          <input style={inputStyle} type="number" min={1} value={host.declaredSlots} onChange={(e) => onChange({ declaredSlots: Number(e.target.value) })} />
+        </Field>
+        <div style={{ paddingTop: 20 }}><Button onClick={() => void check()} disabled={checking}>{checking ? "Checking…" : "Check server"}</Button></div>
+        <div style={{ paddingTop: 20 }}><Button kind="danger" onClick={onRemove}>Remove</Button></div>
+      </div>
+      {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
+      {report ? <ServerReport report={report} /> : null}
+    </div>
+  );
+};
 
 const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
   pool: PoolConfig; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
@@ -99,10 +168,10 @@ const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
-        <SectionTitle title="Model servers" hint="Optional. With servers listed, the pool also stops releasing work when they are down or busy with work from outside Paperclip." />
+        <SectionTitle title="Model servers" hint="Optional. With servers listed, the pool also stops releasing work when they are down or busy with work from outside Paperclip. Check server shows what a server is running right now." />
         {pool.hosts.length === 0 ? <span style={MUTED}>No servers: only the limit above applies.</span> : null}
         {pool.hosts.map((h, k) => (
-          <HostRow key={k} host={h} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
+          <HostRow key={k} host={h} poolId={pool.id} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
         ))}
         <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add server</Button></div>
       </div>

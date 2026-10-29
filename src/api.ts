@@ -3,8 +3,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
+import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import { validatePools, type FieldError } from "./settings.js";
-import type { HeldTask, PoolConfig, Snapshot } from "./types.js";
+import type { EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
 
 export interface PoolSummary {
   id: string;
@@ -33,6 +34,25 @@ export interface QueueRow {
 }
 
 type ActionResult = { ok: true } | { ok: false; error?: string; errors?: FieldError[] };
+
+export interface PoolRunRow {
+  runId: string;
+  status: string;
+  agentName?: string;
+  issueIdentifier?: string;
+  model?: string;
+  startedAt?: string;
+}
+
+export interface InspectHostResult {
+  ok: true;
+  server: InspectResult;
+  // Paperclip runs the plugin counts on this pool at its last cycle.
+  poolRuns: PoolRunRow[];
+  countedAt?: string;
+}
+
+const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio"];
 
 const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
@@ -115,6 +135,29 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
       }
       return result;
     });
+
+  // "Check server": asks the server what it is running now. Takes the host as edited on the settings page, so it works
+  // before saving; only http(s) addresses, GET-only, and only for board users since it reaches out to the network.
+  ctx.actions.register("inspect-host", async (params, context) => {
+    if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can check servers" };
+    const host = (params.host ?? {}) as { engine?: unknown; baseUrl?: unknown };
+    const engine = host.engine as EngineKind;
+    if (!ENGINES.includes(engine)) return { ok: false, error: "Pick a server type first" };
+    let url: URL;
+    try {
+      url = new URL(String(host.baseUrl));
+    } catch {
+      return { ok: false, error: "Enter the server's address, like http://host:8080" };
+    }
+    if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "The address must start with http:// or https://" };
+    const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init) });
+    const snapshot = runtime.snapshot();
+    const poolId = text(params.poolId);
+    const poolRuns: PoolRunRow[] = (snapshot?.runs ?? [])
+      .filter((r) => poolId && r.poolId === poolId)
+      .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
+    return { ok: true, server, poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
+  });
 
   boardAction("save-pools", async (params) => {
     const result = validatePools(params.pools);

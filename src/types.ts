@@ -80,6 +80,9 @@ export interface RunningRun {
   model?: string;
   status: "queued" | "running";
   startedAt?: string;
+  // For display only.
+  agentName?: string;
+  issueIdentifier?: string;
 }
 
 // A task the plugin released whose run hasn't started yet; it still counts against the pool (B2).
