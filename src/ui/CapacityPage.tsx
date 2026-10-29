@@ -7,7 +7,7 @@ import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
 import { Button, inputStyle } from "./components/form.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
-import { BackendUsageTable } from "./components/usage.js";
+import { BackendUsageTable, SubscriptionUsage } from "./components/usage.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
 
@@ -57,6 +57,7 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
         <MetricCard label="Open alerts" value={alerts.data?.active.length ?? 0} />
       </div>
       <BackendUsageTable rows={summary.data?.backends ?? []} companyId={context.companyId} onRefreshed={() => summary.refresh()} />
+      <SubscriptionUsage companyId={context.companyId} />
       {summary.data && pools.length === 0 ? <div>No pools for this company yet. <EditPoolsLink companyPrefix={context.companyPrefix} label="Set up pools" /></div> : null}
 
       <section>

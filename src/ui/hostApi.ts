@@ -32,3 +32,25 @@ export const createCompanySecret = async (companyId: string, name: string, value
   const created = await call<{ id: string }>(`/companies/${encodeURIComponent(companyId)}/secrets`, { method: "POST", body: JSON.stringify({ name, value }) });
   return { type: "secret_ref", secretId: created.id, version: "latest" };
 };
+
+// Subscription usage windows Paperclip tracks per provider account (e.g. Codex's 5-hour and weekly limits). Board-only
+// on the host, so only the UI (running as the board user) can read it, not the worker.
+export interface QuotaWindow {
+  label: string;
+  usedPercent: number | null;
+  resetsAt: string | null;
+  valueLabel: string | null;
+  detail: string | null;
+}
+
+export interface QuotaAccount {
+  provider: string;
+  accountLabel: string;
+  ok: boolean;
+  windows: QuotaWindow[];
+  capturedAt?: string;
+  error?: string;
+}
+
+export const readQuotaWindows = (companyId: string) =>
+  call<QuotaAccount[]>(`/companies/${encodeURIComponent(companyId)}/costs/quota-windows`);
