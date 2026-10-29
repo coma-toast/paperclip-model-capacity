@@ -36,7 +36,8 @@ export const summarizeBackends = (config: Record<string, unknown>): BackendSumma
   readBackends(config).map(({ key, ...rest }) => ({ ...rest, hasKey: Boolean(key) }));
 
 // Rendered by the host's plugin config form too, so every field gets a title, a description and (where one exists)
-// a default; the Model capacity page's Add/Edit backend form is the main editor.
+// a default; the Model capacity page's Add/Edit backend form is the main editor. No x-paperclip-advanced: the host's
+// server validates plugin schemas with strict ajv, which rejects that keyword even though its form understands it.
 export const backendsConfigSchema = {
   backends: {
     type: "array",
@@ -64,9 +65,9 @@ export const backendsConfigSchema = {
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
-        id: { type: "string", title: "Id", description: "Short and unique; pools refer to the backend by it.", "x-paperclip-advanced": true },
-        header: { type: "string", title: "Auth header", default: "Authorization", description: "Header the key goes in.", "x-paperclip-advanced": true },
-        scheme: { type: "string", title: "Auth scheme", default: "Bearer", description: "Put before the key; empty for none.", "x-paperclip-advanced": true },
+        id: { type: "string", title: "Id", description: "Short and unique; pools refer to the backend by it." },
+        header: { type: "string", title: "Auth header", default: "Authorization", description: "Header the key goes in." },
+        scheme: { type: "string", title: "Auth scheme", default: "Bearer", description: "Put before the key; empty for none." },
       },
     },
   },
