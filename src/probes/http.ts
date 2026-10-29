@@ -5,7 +5,9 @@ export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 export interface ProbeContext {
   baseUrl: string;
   fetch: FetchFn;
+  // Sent as Authorization; `headers` takes any header name (from a server auth slot).
   authHeader?: string;
+  headers?: Record<string, string>;
   timeoutMs?: number;
 }
 
@@ -32,7 +34,7 @@ export const request = async (pc: ProbeContext, path: string): Promise<Response>
     }, timeoutMs);
   });
   try {
-    const headers: Record<string, string> = pc.authHeader ? { Authorization: pc.authHeader } : {};
+    const headers: Record<string, string> = { ...(pc.authHeader ? { Authorization: pc.authHeader } : {}), ...pc.headers };
     const res = await Promise.race([pc.fetch(joinUrl(pc.baseUrl, path), { method: "GET", headers, signal: controller.signal }), timeout]);
     if (!res.ok) throw new ProbeError(`${path} returned ${res.status}`);
     return res;

@@ -4,13 +4,14 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
+import { createServerAuth } from "./auth.js";
 import { createExecutor } from "./executor.js";
-import { loadScopedPools } from "./pools.js";
+import { loadScopedPools, splitPoolKey } from "./pools.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, createAgentCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
-import type { AlertEvent, Snapshot } from "./types.js";
+import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -37,6 +38,12 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const configId = async (companyId: string, key: string) => {
     const value = (await ctx.config.get(companyId))[key];
     return typeof value === "string" && value ? value : undefined;
+  };
+  const serverAuth = createServerAuth(ctx);
+  // Hosts in the scheduler's list carry "<companyId>:<serverId>" ids; auth is looked up in that company's config.
+  const hostHeaders = async (host: HostConfig) => {
+    const parts = splitPoolKey(host.id);
+    return parts ? serverAuth.headersFor(parts.companyId, parts.poolId) : undefined;
   };
   const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
   // Alerts without a company (plugin errors) go only to companies that use the plugin.
@@ -90,7 +97,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const probeTick = async () => {
     try {
       const pools = await loadScopedPools(store, (await companies.list()).map((c) => c.id));
-      const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), now });
+      const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), headers: hostHeaders, now });
       await store.hosts.set(statuses);
       for (const change of changes) ctx.logger.info("Model capacity host changed", { hostId: change.hostId, up: change.up });
       const names = new Map(pools.flatMap((p) => p.hosts.map((h) => [h.id, { host: h.name, pool: p.id, companyId: p.companyId }] as const)));
@@ -148,7 +155,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, snapshot: () => lastSnapshot };
+  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, serverAuth, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;

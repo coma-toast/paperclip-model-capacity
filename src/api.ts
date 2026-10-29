@@ -3,6 +3,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
+import { summarizeAuth } from "./auth.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import { validatePools, type FieldError } from "./settings.js";
@@ -51,6 +52,8 @@ export interface PoolRunRow {
 export interface InspectHostResult {
   ok: true;
   server: InspectResult;
+  // Whether a server auth slot supplied credentials for this check.
+  usedAuth: boolean;
   // Paperclip runs the plugin counts on this pool at its last cycle.
   poolRuns: PoolRunRow[];
   countedAt?: string;
@@ -141,8 +144,11 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   // The settings page edits one company's pools, with their own ids (not the scheduler's keys).
   ctx.data.register("pools-config", async (params) => {
     const companyId = companyOf(params);
-    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get() };
-    return { pools: await store.companyPools(companyId).get(), heldPools: await store.companyHeldPools(companyId).get(), exemptions: await store.exemptions.get() };
+    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get(), auth: [] };
+    return {
+      pools: await store.companyPools(companyId).get(), heldPools: await store.companyHeldPools(companyId).get(), exemptions: await store.exemptions.get(),
+      auth: summarizeAuth(await ctx.config.get(companyId)),
+    };
   });
 
   // A6: only people change settings or use the controls; agents and system calls are refused.
@@ -171,14 +177,21 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
       return { ok: false, error: "Enter the server's address, like http://host:8080" };
     }
     if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "The address must start with http:// or https://" };
-    const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init) });
-    const snapshot = runtime.snapshot();
     const companyId = text(params.companyId) ?? context.companyId ?? undefined;
+    const serverId = text((params.host as { id?: unknown } | undefined)?.id);
+    let headers: Record<string, string> | undefined;
+    try {
+      headers = companyId && serverId ? await runtime.serverAuth.headersFor(companyId, serverId) : undefined;
+    } catch (e) {
+      return { ok: false, error: `Couldn't read this server's auth secret: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init), headers });
+    const snapshot = runtime.snapshot();
     const poolId = text(params.poolId) && companyId ? poolKey(companyId, String(params.poolId)) : undefined;
     const poolRuns: PoolRunRow[] = (snapshot?.runs ?? [])
       .filter((r) => poolId && r.poolId === poolId)
       .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
-    return { ok: true, server, poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
+    return { ok: true, server, usedAuth: Boolean(headers), poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
   });
 
   boardAction("save-pools", async (params, _userId, companyId) => {

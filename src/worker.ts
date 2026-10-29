@@ -1,6 +1,7 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
 import { registerApi } from "./api.js";
+import { AUTH_SLOTS } from "./auth.js";
 import manifest from "./manifest.js";
 import { createRuntime, type Runtime } from "./runtime.js";
 
@@ -25,7 +26,9 @@ const plugin = definePlugin({
     const errors: string[] = [];
     for (const [key, value] of Object.entries(config)) {
       if (!CONFIG_KEYS.includes(key)) errors.push(`${key}: unknown setting`);
-      else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
+      else if (AUTH_SLOTS.includes(key as (typeof AUTH_SLOTS)[number])) {
+        if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) errors.push(`${key}: must be an object`);
+      } else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
     }
     return errors.length ? { ok: false, errors } : { ok: true };
   },
