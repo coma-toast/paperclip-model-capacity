@@ -89,33 +89,38 @@ describe("board actions and data handlers", () => {
   it("refuses agents and system callers (A6)", async () => {
     const { harness, store } = await setup();
     for (const actor of [{ type: "agent" as const, agentId: "a1" }, { type: "system" as const }]) {
-      expect(await harness.performAction("save-pools", { pools: [raw("gpu")] }, { actor })).toEqual({ ok: false, error: "Only board users can change model capacity settings" });
+      expect(await harness.performAction("save-pools", { companyId: "c1", pools: [raw("gpu")] }, { actor })).toEqual({ ok: false, error: "Only board users can change model capacity settings" });
     }
-    expect(await store.pools.get()).toEqual([]);
+    expect(await store.companyPools("c1").get()).toEqual([]);
   });
 
-  it("save-pools stores a valid config and returns field errors otherwise", async () => {
+  it("save-pools stores one company's pools and returns field errors otherwise", async () => {
     const { harness, store } = await setup();
-    expect(await harness.performAction("save-pools", { pools: [raw("gpu", { limit: -2 })] }, user)).toEqual({ ok: false, errors: [{ field: "pools[0].limit", message: "Must be a whole number, 0 or more" }] });
-    expect(await harness.performAction("save-pools", { pools: [raw("gpu")] }, user)).toEqual({ ok: true });
-    expect((await store.pools.get())[0]).toMatchObject({ id: "gpu", mode: "observe" });
+    expect(await harness.performAction("save-pools", { companyId: "c1", pools: [raw("gpu", { limit: -2 })] }, user)).toEqual({ ok: false, errors: [{ field: "pools[0].limit", message: "Must be a whole number, 0 or more" }] });
+    expect(await harness.performAction("save-pools", { pools: [raw("gpu")] }, user)).toEqual({ ok: false, error: "Open this from a company's settings" });
+    expect(await harness.performAction("save-pools", { companyId: "c1", pools: [raw("gpu")] }, user)).toEqual({ ok: true });
+    expect((await store.companyPools("c1").get())[0]).toMatchObject({ id: "gpu", mode: "observe" });
+    expect(await store.companyPools("c2").get()).toEqual([]);
+    expect(await harness.getData("pools-config", { companyId: "c1" })).toMatchObject({ pools: [{ id: "gpu" }] });
+    expect(await harness.getData("pools-config", { companyId: "c2" })).toMatchObject({ pools: [] });
   });
 
   it("set-limit, hold-pool and resume-pool change state", async () => {
     const { harness, store } = await setup();
-    await harness.performAction("save-pools", { pools: [raw("gpu")] }, user);
-    expect(await harness.performAction("set-limit", { poolId: "gpu", limit: -1 }, user)).toMatchObject({ ok: false });
-    await harness.performAction("set-limit", { poolId: "gpu", limit: 3 }, user);
-    expect((await store.pools.get())[0].limit).toBe(3);
-    await harness.performAction("hold-pool", { poolId: "gpu" }, user);
-    expect(await store.heldPools.get()).toEqual(["gpu"]);
-    await harness.performAction("resume-pool", { poolId: "gpu" }, user);
-    expect(await store.heldPools.get()).toEqual([]);
+    await harness.performAction("save-pools", { companyId: "c1", pools: [raw("gpu")] }, user);
+    expect(await harness.performAction("set-limit", { poolId: "c1:gpu", limit: -1 }, user)).toMatchObject({ ok: false });
+    expect(await harness.performAction("set-limit", { poolId: "c2:gpu", limit: 3 }, user)).toEqual({ ok: false, error: "No such pool" });
+    await harness.performAction("set-limit", { poolId: "c1:gpu", limit: 3 }, user);
+    expect((await store.companyPools("c1").get())[0].limit).toBe(3);
+    await harness.performAction("hold-pool", { poolId: "c1:gpu" }, user);
+    expect(await store.companyHeldPools("c1").get()).toEqual(["gpu"]);
+    await harness.performAction("resume-pool", { poolId: "c1:gpu" }, user);
+    expect(await store.companyHeldPools("c1").get()).toEqual([]);
   });
 
   it("release-now releases a held task past the limit and logs who did it (F1)", async () => {
     const { harness, store, runtime } = await setup();
-    await store.pools.set(pools(raw("gpu", { mode: "enforce", limit: 0 })));
+    await store.companyPools("c1").set(pools(raw("gpu", { mode: "enforce", limit: 0 })));
     await runtime.cycle("sweep");
     expect(Object.keys(await store.holds.get()).sort()).toEqual(["t1", "t2"]);
     expect(await harness.performAction("release-now", { issueId: "t1" }, user)).toEqual({ ok: true });
@@ -127,8 +132,8 @@ describe("board actions and data handlers", () => {
   it("move-to-front puts a task first; exempt records agents and tasks", async () => {
     const { harness, store } = await setup();
     await store.holds.set({
-      t1: { issueId: "t1", companyId: "c1", poolId: "gpu", priority: "high", heldAt: minutesAgo(30) },
-      t2: { issueId: "t2", companyId: "c1", poolId: "gpu", priority: "low", heldAt: minutesAgo(5) },
+      t1: { issueId: "t1", companyId: "c1", poolId: "c1:gpu", priority: "high", heldAt: minutesAgo(30) },
+      t2: { issueId: "t2", companyId: "c1", poolId: "c1:gpu", priority: "low", heldAt: minutesAgo(5) },
     });
     await harness.performAction("move-to-front", { issueId: "t2" }, user);
     const queue = await harness.getData<{ rows: QueueRow[] }>("queue");
@@ -141,11 +146,15 @@ describe("board actions and data handlers", () => {
 
   it("capacity-summary reports use, queue, oldest wait, hosts and alerts per pool", async () => {
     const { harness, store } = await setup();
-    await store.pools.set(pools(raw("gpu", { hosts: [{ id: "h1", name: "box", engine: "llamacpp", baseUrl: "http://box" }] })));
-    await store.hosts.set({ h1: { hostId: "h1", up: true, consecutiveFailures: 0, consecutiveSuccesses: 2, slotsTotal: 2, slotsBusy: 0 } });
-    await store.holds.set({ t1: { issueId: "t1", companyId: "c1", poolId: "gpu", priority: "medium", heldAt: minutesAgo(10) } });
-    await store.alerts.set({ active: { "overLimit:gpu": { kind: "overLimit", subject: "gpu", state: "start", message: "m", at: NOW, poolId: "gpu" } }, recent: [] });
-    const summary = await harness.getData<{ pools: PoolSummary[] }>("capacity-summary");
-    expect(summary.pools).toEqual([expect.objectContaining({ id: "gpu", mode: "observe", limit: 1, available: 1, inUse: 0, queued: 1, oldestWaitSeconds: 600, openAlerts: 1, hosts: [expect.objectContaining({ id: "h1", up: true, slotsTotal: 2 })] })]);
+    await store.companyPools("c1").set(pools(raw("gpu", { hosts: [{ id: "h1", name: "box", engine: "llamacpp", baseUrl: "http://box" }] })));
+    await store.hosts.set({ "c1:h1": { hostId: "h1", up: true, consecutiveFailures: 0, consecutiveSuccesses: 2, slotsTotal: 2, slotsBusy: 0 } });
+    await store.holds.set({ t1: { issueId: "t1", companyId: "c1", poolId: "c1:gpu", priority: "medium", heldAt: minutesAgo(10) } });
+    await store.alerts.set({ active: { "overLimit:c1:gpu": { kind: "overLimit", subject: "c1:gpu", state: "start", message: "m", at: NOW, poolId: "c1:gpu" } }, recent: [] });
+    const summary = await harness.getData<{ pools: PoolSummary[] }>("capacity-summary", { companyId: "c1" });
+    expect(summary.pools).toEqual([expect.objectContaining({
+      id: "c1:gpu", companyId: "c1", localId: "gpu", mode: "observe", limit: 1, available: 1, inUse: 0, queued: 1, oldestWaitSeconds: 600, openAlerts: 1,
+      hosts: [expect.objectContaining({ id: "c1:h1", up: true, slotsTotal: 2 })],
+    })]);
+    expect((await harness.getData<{ pools: PoolSummary[] }>("capacity-summary", { companyId: "c2" })).pools).toEqual([]);
   });
 });

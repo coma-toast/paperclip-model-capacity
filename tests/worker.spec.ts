@@ -35,7 +35,7 @@ const setup = async () => {
   };
   const runtime = make();
   await runtime.store.companies.set([{ id: "c1", name: "c1" }]);
-  await runtime.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"] })]);
+  await runtime.store.companyPools("c1").set([pool("gpu", { patterns: ["gateway/gpu"] })]);
   return { harness, runtime, make, setRuns: (r: RunRow[]) => { runs = r; } };
 };
 
@@ -78,7 +78,7 @@ describe("invocation context (live-install bug, 2026-10-29)", () => {
     const seen: (string | undefined)[] = [];
     const rt = createRuntime(harness.ctx, { debounceMs: 20, probeIntervalMs: 0, readRuns: async () => { seen.push(sdkLike.getStore()?.id); return []; } });
     runtimes.push(rt);
-    await rt.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"] })]);
+    await rt.store.companyPools("c1").set([pool("gpu", { patterns: ["gateway/gpu"] })]);
     sdkLike.run({ id: "event-invocation" }, () => rt.schedule("agent.run.finished"));
     await rt.idle();
     expect(seen).toEqual([undefined]);
@@ -154,14 +154,14 @@ describe("probe tick", () => {
     const { harness, runtime } = await setup();
     const fake = await startFake(openAiRoutes());
     try {
-      await runtime.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"], hosts: [host("h1", { engine: "openai", baseUrl: fake.baseUrl })] })]);
+      await runtime.store.companyPools("c1").set([pool("gpu", { patterns: ["gateway/gpu"], hosts: [host("h1", { engine: "openai", baseUrl: fake.baseUrl })] })]);
       await runtime.probeTick();
       await runtime.probeTick();
-      expect((await runtime.store.hosts.get()).h1.up).toBe(true);
+      expect((await runtime.store.hosts.get())["c1:h1"].up).toBe(true);
       await fake.close();
       for (let i = 0; i < 3; i++) await runtime.probeTick();
-      expect((await runtime.store.hosts.get()).h1.up).toBe(false);
-      expect(harness.logs.filter((l) => l.message === "Model capacity host changed").map((l) => l.meta)).toEqual([{ hostId: "h1", up: true }, { hostId: "h1", up: false }]);
+      expect((await runtime.store.hosts.get())["c1:h1"].up).toBe(false);
+      expect(harness.logs.filter((l) => l.message === "Model capacity host changed").map((l) => l.meta)).toEqual([{ hostId: "c1:h1", up: true }, { hostId: "c1:h1", up: false }]);
     } finally {
       await fake.close().catch(() => undefined);
     }

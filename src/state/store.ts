@@ -100,12 +100,15 @@ export const createStore = (state: PluginStateClient) => {
   };
 
   return {
+    // Legacy single pool list from before per-company pools; read only to migrate.
     pools: blob<PoolConfig[]>(state, instanceKey("pools"), () => []),
+    // Instance-scope keys per company: proactive work can always read instance state.
+    companyPools: (companyId: string) => blob<PoolConfig[]>(state, instanceKey(`pools:${companyId}`), () => []),
+    companyHeldPools: (companyId: string) => blob<string[]>(state, instanceKey(`heldPools:${companyId}`), () => []),
     hosts: blob<Record<string, HostStatus>>(state, instanceKey("hosts"), () => ({})),
     holds: blob<Record<string, HeldTask>>(state, instanceKey("holds"), () => ({})),
     released: blob<Record<string, ReleasedTask>>(state, instanceKey("released"), () => ({})),
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
-    heldPools: blob<string[]>(state, instanceKey("heldPools"), () => []),
     exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
     // Keys of unapplied decisions made last cycle, so history records each one once.
     observed: blob<string[]>(state, instanceKey("observed"), () => []),

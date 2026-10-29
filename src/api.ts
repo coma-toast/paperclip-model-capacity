@@ -3,12 +3,16 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { PRIORITY_RANK } from "./constants.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
+import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import { validatePools, type FieldError } from "./settings.js";
-import type { EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
+import type { Action, AlertEvent, EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
 
 export interface PoolSummary {
+  // The scheduler's key, "<companyId>:<poolId>"; pass it back to set-limit, hold-pool and resume-pool.
   id: string;
+  companyId?: string;
+  localId?: string;
   name: string;
   mode: PoolConfig["mode"];
   privacy: PoolConfig["privacy"];
@@ -66,7 +70,7 @@ export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Dat
     const holds = snapshot.holds.filter((h) => h.poolId === pool.id);
     const oldest = holds.reduce<string | undefined>((min, h) => (!min || h.heldAt < min ? h.heldAt : min), undefined);
     return {
-      id: pool.id, name: pool.name, mode: pool.mode, privacy: pool.privacy, limit: pool.limit,
+      id: pool.id, companyId: pool.companyId, localId: pool.localId, name: pool.name, mode: pool.mode, privacy: pool.privacy, limit: pool.limit,
       available: availableCapacity(pool, snapshot, runs), inUse: runs + pending, queued: holds.length,
       oldestWaitSeconds: oldest ? Math.max(0, Math.round((now.getTime() - Date.parse(oldest)) / 1000)) : null,
       onHold: snapshot.heldPools.includes(pool.id), openAlerts: openAlertPools.filter((p) => p === pool.id).length,
@@ -79,26 +83,35 @@ export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Dat
 
 export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Date = () => new Date()) => {
   const { store } = runtime;
+  const companyOf = (params: Record<string, unknown>) => text(params.companyId);
+  const knownCompanyIds = async (only?: string) => (only ? [only] : (await store.companies.get()).map((c) => c.id));
 
-  // A snapshot from state alone, for before the first cycle has run.
-  const currentSnapshot = async (): Promise<Snapshot> =>
-    runtime.snapshot() ?? {
-      now: now().toISOString(), pools: await store.pools.get(), hosts: await store.hosts.get(), runs: [], tasks: [],
-      holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()), heldPools: await store.heldPools.get(),
-    };
-
-  ctx.data.register("capacity-summary", async () => {
-    const snapshot = { ...(await currentSnapshot()), pools: await store.pools.get(), holds: Object.values(await store.holds.get()), heldPools: await store.heldPools.get() };
-    const alerts = await store.alerts.get();
+  // The latest cycle's snapshot, with pools, holds and pool holds re-read so a just-saved change shows at once.
+  const currentSnapshot = async (companyId?: string): Promise<Snapshot> => {
+    const ids = await knownCompanyIds(companyId);
+    const last = runtime.snapshot();
     return {
-      pools: summarize(snapshot, Object.values(alerts.active).flatMap((a) => (a.poolId ? [a.poolId] : [])), now()),
-      lastCycleAt: runtime.health().lastCycleAt, lastError: runtime.health().lastError, diagnostics: runtime.snapshot()?.diagnostics,
+      now: last?.now ?? now().toISOString(), hosts: await store.hosts.get(), runs: last?.runs ?? [], tasks: last?.tasks ?? [],
+      released: last?.released ?? Object.values(await store.released.get()), diagnostics: last?.diagnostics,
+      pools: await loadScopedPools(store, ids), holds: Object.values(await store.holds.get()).filter((h) => !companyId || h.companyId === companyId),
+      heldPools: await loadHeldPoolKeys(store, ids),
+    };
+  };
+
+  ctx.data.register("capacity-summary", async (params) => {
+    const companyId = companyOf(params);
+    const snapshot = await currentSnapshot(companyId);
+    const alerts = Object.values((await store.alerts.get()).active).filter((a) => !companyId || !a.companyId || a.companyId === companyId);
+    return {
+      pools: summarize(snapshot, alerts.flatMap((a) => (a.poolId ? [a.poolId] : [])), now()),
+      lastCycleAt: runtime.health().lastCycleAt, lastError: runtime.health().lastError, diagnostics: snapshot.diagnostics,
     };
   });
 
   ctx.data.register("queue", async (params) => {
+    const companyId = companyOf(params);
     const poolId = text(params.poolId);
-    const holds = Object.values(await store.holds.get()).filter((h) => !poolId || h.poolId === poolId);
+    const holds = Object.values(await store.holds.get()).filter((h) => (!poolId || h.poolId === poolId) && (!companyId || h.companyId === companyId));
     const positions = new Map<string, number>();
     const rows: QueueRow[] = [];
     for (const h of holds.sort(queueOrder)) {
@@ -110,25 +123,33 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     return { rows };
   });
 
+  const actionCompany = (a: Action) => (a.kind === "alert" ? a.alert.companyId : a.companyId);
   ctx.data.register("history", async (params) => {
+    const companyId = companyOf(params);
     const day = text(params.day) ?? now().toISOString().slice(0, 10);
-    return { day, days: await store.historyDays(), entries: (await store.history(day)).slice().reverse() };
+    const entries = (await store.history(day)).filter((e) => !companyId || !actionCompany(e.action) || actionCompany(e.action) === companyId);
+    return { day, days: await store.historyDays(), entries: entries.reverse() };
   });
 
-  ctx.data.register("alerts", async () => {
+  ctx.data.register("alerts", async (params) => {
+    const companyId = companyOf(params);
+    const mine = (a: AlertEvent) => !companyId || !a.companyId || a.companyId === companyId;
     const { active, recent } = await store.alerts.get();
-    return { active: Object.values(active), recent: recent.slice().reverse() };
+    return { active: Object.values(active).filter(mine), recent: recent.filter(mine).reverse() };
   });
 
-  ctx.data.register("pools-config", async () => ({
-    pools: await store.pools.get(), heldPools: await store.heldPools.get(), exemptions: await store.exemptions.get(),
-  }));
+  // The settings page edits one company's pools, with their own ids (not the scheduler's keys).
+  ctx.data.register("pools-config", async (params) => {
+    const companyId = companyOf(params);
+    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get() };
+    return { pools: await store.companyPools(companyId).get(), heldPools: await store.companyHeldPools(companyId).get(), exemptions: await store.exemptions.get() };
+  });
 
   // A6: only people change settings or use the controls; agents and system calls are refused.
-  const boardAction = (key: string, fn: (params: Record<string, unknown>, userId: string) => Promise<ActionResult>) =>
+  const boardAction = (key: string, fn: (params: Record<string, unknown>, userId: string, companyId?: string) => Promise<ActionResult>) =>
     ctx.actions.register(key, async (params, context) => {
       if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can change model capacity settings" };
-      const result = await fn(params, context.actor.userId);
+      const result = await fn(params, context.actor.userId, text(params.companyId) ?? context.companyId ?? undefined);
       if (result.ok) {
         runtime.schedule(key);
         ctx.logger.info("Model capacity setting changed", { action: key, userId: context.actor.userId });
@@ -152,38 +173,51 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "The address must start with http:// or https://" };
     const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init) });
     const snapshot = runtime.snapshot();
-    const poolId = text(params.poolId);
+    const companyId = text(params.companyId) ?? context.companyId ?? undefined;
+    const poolId = text(params.poolId) && companyId ? poolKey(companyId, String(params.poolId)) : undefined;
     const poolRuns: PoolRunRow[] = (snapshot?.runs ?? [])
       .filter((r) => poolId && r.poolId === poolId)
       .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
     return { ok: true, server, poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
   });
 
-  boardAction("save-pools", async (params) => {
+  boardAction("save-pools", async (params, _userId, companyId) => {
+    if (!companyId) return { ok: false, error: "Open this from a company's settings" };
     const result = validatePools(params.pools);
     if (!result.ok) return { ok: false, errors: result.errors };
-    await store.pools.set(result.pools);
+    await store.companyPools(companyId).set(result.pools);
     return { ok: true };
   });
 
+  // The capacity page sends the scheduler's pool key, which names the company.
+  const poolFromKey = async (key: unknown) => {
+    const parts = typeof key === "string" ? splitPoolKey(key) : undefined;
+    if (!parts) return undefined;
+    const pools = await store.companyPools(parts.companyId).get();
+    return pools.some((p) => p.id === parts.poolId) ? { ...parts, pools } : undefined;
+  };
+
   boardAction("set-limit", async (params) => {
-    const pools = await store.pools.get();
-    const pool = pools.find((p) => p.id === params.poolId);
-    if (!pool) return { ok: false, error: "No such pool" };
+    const found = await poolFromKey(params.poolId);
+    if (!found) return { ok: false, error: "No such pool" };
     if (typeof params.limit !== "number" || !Number.isInteger(params.limit) || params.limit < 0) return { ok: false, errors: [{ field: "limit", message: "Must be a whole number, 0 or more" }] };
-    await store.pools.set(pools.map((p) => (p.id === pool.id ? { ...p, limit: params.limit as number } : p)));
+    await store.companyPools(found.companyId).set(found.pools.map((p) => (p.id === found.poolId ? { ...p, limit: params.limit as number } : p)));
     return { ok: true };
   });
 
   boardAction("hold-pool", async (params) => {
-    const poolId = text(params.poolId);
-    if (!poolId) return { ok: false, error: "poolId is required" };
-    await store.heldPools.set([...new Set([...(await store.heldPools.get()), poolId])]);
+    const found = await poolFromKey(params.poolId);
+    if (!found) return { ok: false, error: "No such pool" };
+    const held = store.companyHeldPools(found.companyId);
+    await held.set([...new Set([...(await held.get()), found.poolId])]);
     return { ok: true };
   });
 
   boardAction("resume-pool", async (params) => {
-    await store.heldPools.set((await store.heldPools.get()).filter((p) => p !== params.poolId));
+    const found = await poolFromKey(params.poolId);
+    if (!found) return { ok: false, error: "No such pool" };
+    const held = store.companyHeldPools(found.companyId);
+    await held.set((await held.get()).filter((p) => p !== found.poolId));
     return { ok: true };
   });
 
@@ -191,7 +225,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const held = (await store.holds.get())[String(params.issueId)];
     if (!held) return { ok: false, error: "That task isn't waiting" };
     await runtime.executor.releaseNow(held.issueId, held.companyId, held.poolId);
-    await ctx.activity.log({ companyId: held.companyId, message: `Model capacity: released now by a board user, bypassing the ${held.poolId} limit`, entityType: "issue", entityId: held.issueId, metadata: { userId } });
+    await ctx.activity.log({ companyId: held.companyId, message: `Model capacity: released now by a board user, bypassing the ${splitPoolKey(held.poolId)?.poolId ?? held.poolId} pool limit`, entityType: "issue", entityId: held.issueId, metadata: { userId } });
     return { ok: true };
   });
 

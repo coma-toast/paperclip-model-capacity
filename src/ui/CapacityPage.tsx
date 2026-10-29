@@ -18,11 +18,12 @@ const describe = (e: HistoryEntry) => {
 };
 
 // H2: pools and hosts, the queue with controls, recent alerts and today's decisions.
-export const CapacityPage = (_props: PluginPageProps) => {
-  const summary = usePluginData<{ pools: PoolSummary[]; lastCycleAt?: string }>("capacity-summary");
-  const queue = usePluginData<{ rows: QueueRow[] }>("queue");
-  const alerts = usePluginData<{ active: AlertEvent[]; recent: AlertEvent[] }>("alerts");
-  const history = usePluginData<{ entries: HistoryEntry[] }>("history");
+export const CapacityPage = ({ context }: PluginPageProps) => {
+  const scope = { companyId: context.companyId };
+  const summary = usePluginData<{ pools: PoolSummary[]; lastCycleAt?: string }>("capacity-summary", scope);
+  const queue = usePluginData<{ rows: QueueRow[] }>("queue", scope);
+  const alerts = usePluginData<{ active: AlertEvent[]; recent: AlertEvent[] }>("alerts", scope);
+  const history = usePluginData<{ entries: HistoryEntry[] }>("history", scope);
   const refreshAll = () => [summary, queue, alerts, history].forEach((d) => d.refresh());
   usePoll(refreshAll);
   const toast = usePluginToast();
@@ -91,7 +92,7 @@ export const CapacityPage = (_props: PluginPageProps) => {
           loading={queue.loading && !queue.data}
           emptyMessage="Nothing is waiting."
           columns={[
-            { key: "poolId", header: "Pool" },
+            { key: "poolId", header: "Pool", render: (v) => pools.find((p) => p.id === v)?.name ?? String(v) },
             { key: "position", header: "#" },
             { key: "identifier", header: "Task", render: (_v, row) => { const r = row as unknown as QueueRow; return `${r.identifier ?? r.issueId}${r.title ? ` ${r.title}` : ""}`; } },
             { key: "priority", header: "Priority" },

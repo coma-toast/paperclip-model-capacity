@@ -112,7 +112,7 @@ describe("worker integration", () => {
     const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => runs });
     runtimes.push(rt);
     await rt.store.companies.set([{ id: "c1", name: "c1" }]);
-    await rt.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"], alertAfterMinutes: 30 })]);
+    await rt.store.companyPools("c1").set([pool("gpu", { patterns: ["gateway/gpu"], alertAfterMinutes: 30 })]);
     await rt.cycle("sweep");
     await rt.store.holds.set({ t1: { ...(await rt.store.holds.get()).t1, heldAt: minutesAgo(45) } });
     await rt.cycle("sweep");
@@ -133,7 +133,7 @@ describe("worker integration", () => {
     const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
     runtimes.push(rt);
     await rt.store.companies.set([{ id: "c1", name: "c1" }]);
-    await rt.store.pools.set([pool("gpu", { hosts: [host("h1", { name: "gpu box", engine: "openai", baseUrl: fake.baseUrl })] })]);
+    await rt.store.companyPools("c1").set([pool("gpu", { hosts: [host("h1", { name: "gpu box", engine: "openai", baseUrl: fake.baseUrl })] })]);
     await rt.probeTick();
     await rt.probeTick();
     await fake.close();

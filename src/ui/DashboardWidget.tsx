@@ -9,13 +9,13 @@ interface Summary {
 }
 
 // H1: one row per pool with use, queue, oldest wait, host dots and alerts.
-export const DashboardWidget = (_props: PluginWidgetProps) => {
-  const { data, loading, error, refresh } = usePluginData<Summary>("capacity-summary");
+export const DashboardWidget = ({ context }: PluginWidgetProps) => {
+  const { data, loading, error, refresh } = usePluginData<Summary>("capacity-summary", { companyId: context.companyId });
   usePoll(refresh);
 
   if (loading && !data) return <Spinner />;
   if (error) return <div>Model capacity: {error.message}</div>;
-  if (!data?.pools.length) return <div>Model capacity: no pools yet. Add them in the plugin settings.</div>;
+  if (!data?.pools.length) return <div>Model capacity: no pools for this company yet. Add them in Company settings → Model capacity.</div>;
 
   return (
     <div style={{ display: "grid", gap: 6 }}>
