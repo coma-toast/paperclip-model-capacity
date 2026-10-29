@@ -27,13 +27,17 @@ export interface AlerterDeps {
   store: Store;
   // The company's standing alert task (company config `alertIssueId`).
   alertIssueId?: (companyId: string) => Promise<string | undefined>;
+  // Companies an instance-wide alert goes to. Defaults to companies.list, which the host refuses from timer work, so
+  // the worker passes its saved company list.
+  listCompanies?: () => Promise<{ id: string }[]>;
 }
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export const createAlerter = ({ ctx, store, alertIssueId = async () => undefined }: AlerterDeps) => {
+export const createAlerter = ({ ctx, store, alertIssueId = async () => undefined, listCompanies }: AlerterDeps) => {
   // An instance-wide alert (a host, an instance pool) goes to every company's channels.
-  const companiesFor = async (e: AlertEvent) => (e.companyId ? [e.companyId] : (await ctx.companies.list({ limit: 200 })).map((c) => c.id));
+  const companiesFor = async (e: AlertEvent) =>
+    e.companyId ? [e.companyId] : (await (listCompanies ?? (() => ctx.companies.list({ limit: 200 })))()).map((c) => c.id);
 
   const deliver = async (e: AlertEvent) => {
     const text = alertText(e);
