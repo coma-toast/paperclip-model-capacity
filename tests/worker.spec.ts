@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,6 +67,32 @@ describe("event wiring", () => {
     expect(harness.dbQueries).toHaveLength(0);
     expect((await runtime.store.historyDays()).length).toBe(1);
     expect((await runtime.store.history(new Date().toISOString().slice(0, 10))).filter((e) => e.action.kind === "hold")).toHaveLength(1);
+  });
+});
+
+describe("invocation context (live-install bug, 2026-10-29)", () => {
+  it("runs a debounced cycle outside the event's async context, so it carries no expired invocation id", async () => {
+    const { harness } = await setup();
+    const sdkLike = new AsyncLocalStorage<{ id: string }>();
+    const seen: (string | undefined)[] = [];
+    const rt = createRuntime(harness.ctx, { debounceMs: 20, probeIntervalMs: 0, readRuns: async () => { seen.push(sdkLike.getStore()?.id); return []; } });
+    runtimes.push(rt);
+    await rt.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"] })]);
+    sdkLike.run({ id: "event-invocation" }, () => rt.schedule("agent.run.finished"));
+    await rt.idle();
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("keeps the last company list when companies.list is refused", async () => {
+    const { harness } = await setup();
+    const { createCompanyLister } = await import("../src/snapshot.js");
+    const list = createCompanyLister(harness.ctx);
+    expect((await list()).map((c) => c.id)).toEqual(["c1"]);
+    const original = harness.ctx.companies.list;
+    harness.ctx.companies.list = async () => { throw new Error("invocation scope"); };
+    expect((await list()).map((c) => c.id)).toEqual(["c1"]);
+    harness.ctx.companies.list = original;
+    await expect(createCompanyLister({ ...harness.ctx, companies: { ...harness.ctx.companies, list: async () => { throw new Error("x"); } } })()).rejects.toThrow("x");
   });
 });
 
