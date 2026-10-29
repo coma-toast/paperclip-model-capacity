@@ -109,7 +109,10 @@ export const SubscriptionUsage = ({ companyId }: { companyId: string | null }) =
   useEffect(() => {
     if (!companyId) return;
     let live = true;
-    const load = () => readQuotaWindows(companyId).then((a) => live && setAccounts(a)).catch(() => live && setAccounts([]));
+    // Providers with no connected account (a company that doesn't use that subscription) aren't shown.
+    const load = () => readQuotaWindows(companyId)
+      .then((a) => live && setAccounts(a.filter((x) => x.errorFamily !== "credentials_unavailable")))
+      .catch(() => live && setAccounts([]));
     void load();
     const timer = setInterval(() => void load(), QUOTA_POLL_MS);
     return () => {
@@ -124,9 +127,9 @@ export const SubscriptionUsage = ({ companyId }: { companyId: string | null }) =
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>
           {accounts.map((a) => (
-            <tr key={`${a.provider}:${a.accountLabel}`} style={{ verticalAlign: "top", borderTop: "1px solid rgba(128,128,128,0.2)" }}>
+            <tr key={`${a.provider}:${a.accountLabel ?? ""}`} style={{ verticalAlign: "top", borderTop: "1px solid rgba(128,128,128,0.2)" }}>
               <td style={{ padding: "4px 8px 4px 0", whiteSpace: "nowrap" }}>
-                {a.accountLabel}
+                {a.accountLabel ?? a.provider}
                 <div style={MUTED}>{a.provider}</div>
               </td>
               <td style={{ padding: "4px 0" }}>

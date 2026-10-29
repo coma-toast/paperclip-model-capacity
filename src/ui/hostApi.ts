@@ -45,8 +45,9 @@ export interface QuotaWindow {
 
 export interface QuotaAccount {
   provider: string;
-  accountLabel: string;
+  accountLabel?: string;
   ok: boolean;
+  errorFamily?: string;
   windows: QuotaWindow[];
   capturedAt?: string;
   error?: string;
