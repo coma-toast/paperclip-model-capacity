@@ -1,7 +1,7 @@
 import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK } from "./constants.js";
-import { loadHeldPoolKeys, loadScopedPools } from "./pools.js";
+import { loadHeldPoolKeys, loadScopedPools, type BackendsFor } from "./pools.js";
 import { matchPool } from "./scheduler/match.js";
 import { agentModel, effectiveModel, isPinned } from "./scheduler/model.js";
 import type { Store } from "./state/store.js";
@@ -124,15 +124,16 @@ export interface SnapshotDeps {
   agents: AgentCache;
   readRuns: RunReader;
   listCompanies?: () => Promise<Company[]>;
+  backendsFor?: BackendsFor;
   now?: Date;
 }
 
-export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
+export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, backendsFor, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [hosts, holds, released, overrides, exemptions] = await Promise.all([
     store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
   ]);
   const known = listCompanies ? await listCompanies() : await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
-  const pools = await loadScopedPools(store, known.map((c) => c.id));
+  const pools = await loadScopedPools(store, known.map((c) => c.id), backendsFor);
   const heldPools = await loadHeldPoolKeys(store, known.map((c) => c.id));
   // A company with no pools has nothing to limit, so its tasks and agents aren't read at all.
   const companies = known.filter((c) => pools.some((p) => p.companyId === c.id));

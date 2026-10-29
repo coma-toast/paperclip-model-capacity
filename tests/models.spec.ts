@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
 import { registerApi } from "../src/api.js";
-import { createCredentials } from "../src/auth.js";
 import manifest from "../src/manifest.js";
-import { listApiModels, modelsPath } from "../src/models.js";
+import { listBackendModels, modelsPath } from "../src/models.js";
 import { createRuntime, type Runtime } from "../src/runtime.js";
 import { startFake, type Routes } from "./fakes/server.js";
 
@@ -21,9 +20,13 @@ const fake = async (routes: Routes) => {
   return f;
 };
 const openAi = (ids: string[], status = 200): Routes => ({ "/v1/models": { status, body: { object: "list", data: ids.map((id) => ({ id })) } } });
-const setup = () => {
+const user = { actor: { type: "user" as const, userId: "u1" } };
+const withApi = () => {
   const harness = createTestHarness({ manifest });
-  return { harness, creds: createCredentials(harness.ctx) };
+  const runtime = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
+  runtimes.push(runtime);
+  registerApi(harness.ctx, runtime);
+  return harness;
 };
 
 describe("modelsPath", () => {
@@ -33,53 +36,56 @@ describe("modelsPath", () => {
   });
 });
 
-describe("listApiModels", () => {
-  it("lists a proxy's models at the pool's address with the pool's credential, sorted and de-duplicated", async () => {
+describe("listBackendModels", () => {
+  it("lists a proxy's models with the given headers, sorted and de-duplicated", async () => {
     const f = await fake(openAi(["b", "a", "b"]));
-    const { harness, creds } = setup();
-    harness.setConfig({ credential1: { name: "proxy-key", token: KEY } });
-    const r = await listApiModels(harness.ctx, creds, "c1", { api: "litellm", patterns: [], endpoint: { baseUrl: f.baseUrl, credential: "proxy-key" } });
+    const { ctx } = createTestHarness({ manifest });
+    const r = await listBackendModels(ctx, { type: "litellm", name: "Proxy", baseUrl: f.baseUrl }, { Authorization: "Bearer k" });
     expect(r).toEqual({ ok: true, source: `${f.baseUrl}/v1/models`, models: ["a", "b"] });
-    expect(f.requests[0].headers.authorization?.startsWith("Bearer ")).toBe(true);
+    expect(f.requests[0].headers.authorization).toBe("Bearer k");
   });
 
   it("lists a generic OpenAI-compatible endpoint and a local engine", async () => {
     const f = await fake(openAi(["m1"]));
-    const { harness, creds } = setup();
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "openai", patterns: [], endpoint: { baseUrl: `${f.baseUrl}/v1` } })).toMatchObject({ ok: true, models: ["m1"] });
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "lmstudio", patterns: [], endpoint: { baseUrl: f.baseUrl } })).toMatchObject({ ok: true, models: ["m1"] });
+    const { ctx } = createTestHarness({ manifest });
+    expect(await listBackendModels(ctx, { type: "openai", name: "API", baseUrl: `${f.baseUrl}/v1` })).toMatchObject({ ok: true, models: ["m1"] });
+    expect(await listBackendModels(ctx, { type: "lmstudio", name: "Laptop", baseUrl: f.baseUrl })).toMatchObject({ ok: true, models: ["m1"] });
   });
 
   it("lists Ollama models from /api/tags", async () => {
     const f = await fake({ "/api/tags": { body: { models: [{ name: "qwen3:8b" }, { name: "llama3.3:70b" }] } } });
-    const { harness, creds } = setup();
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "ollama", patterns: [], endpoint: { baseUrl: f.baseUrl } })).toEqual({ ok: true, source: `${f.baseUrl}/api/tags`, models: ["llama3.3:70b", "qwen3:8b"] });
+    const { ctx } = createTestHarness({ manifest });
+    expect(await listBackendModels(ctx, { type: "ollama", name: "Ollama", baseUrl: f.baseUrl })).toEqual({ ok: true, source: `${f.baseUrl}/api/tags`, models: ["llama3.3:70b", "qwen3:8b"] });
   });
 
-  it("asks for an address when the API has no default, and explains names-only pools", async () => {
-    const { harness, creds } = setup();
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "litellm", patterns: [] })).toEqual({ ok: false, error: "Enter the pool's address first (e.g. https://litellm.example.com)." });
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "other", patterns: [] })).toMatchObject({ ok: false });
+  it("asks for an address when the type has no default, and explains names-only backends", async () => {
+    const { ctx } = createTestHarness({ manifest });
+    expect(await listBackendModels(ctx, { type: "litellm", name: "Proxy" })).toEqual({ ok: false, error: "Enter Proxy's address (e.g. https://litellm.example.com)." });
+    expect(await listBackendModels(ctx, { type: "other", name: "Names" })).toMatchObject({ ok: false });
   });
 
   it("explains a refused request", async () => {
     const f = await fake(openAi([], 401));
-    const { harness, creds } = setup();
-    expect(await listApiModels(harness.ctx, creds, "c1", { api: "openai", patterns: [], endpoint: { baseUrl: f.baseUrl } })).toEqual({
-      ok: false, error: "OpenAI-compatible endpoint refused the request (/v1/models returned 401): set the pool's credential.",
+    const { ctx } = createTestHarness({ manifest });
+    expect(await listBackendModels(ctx, { type: "openai", name: "API", baseUrl: f.baseUrl })).toEqual({
+      ok: false, error: "API refused the request (/v1/models returned 401): check the API key.",
     });
   });
 });
 
-describe("list-api-models action", () => {
-  it("is board-only and needs a company and a known API", async () => {
-    const harness = createTestHarness({ manifest });
-    const runtime = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
-    runtimes.push(runtime);
-    registerApi(harness.ctx, runtime);
-    const user = { actor: { type: "user" as const, userId: "u1" } };
-    expect(await harness.performAction("list-api-models", { companyId: "c1", pool: { api: "openai" } }, { actor: { type: "agent", agentId: "a1" } })).toMatchObject({ ok: false });
-    expect(await harness.performAction("list-api-models", { pool: { api: "openai" } }, user)).toEqual({ ok: false, error: "Open this from a company's settings" });
-    expect(await harness.performAction("list-api-models", { companyId: "c1", pool: { api: "bedrock" } }, user)).toEqual({ ok: false, error: "Pick the pool's API first" });
+describe("list-backend-models action", () => {
+  it("is board-only and needs a company and a saved backend", async () => {
+    const harness = withApi();
+    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "p" }, { actor: { type: "agent", agentId: "a1" } })).toMatchObject({ ok: false });
+    expect(await harness.performAction("list-backend-models", { backendId: "p" }, user)).toEqual({ ok: false, error: "Open this from a company's settings" });
+    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "p" }, user)).toEqual({ ok: false, error: "Pick a backend for this pool first" });
+  });
+
+  it("lists a saved backend's models with its saved key", async () => {
+    const f = await fake(openAi(["litellm/a"]));
+    const harness = withApi();
+    harness.setConfig({ backends: [{ id: "p", name: "Proxy", type: "litellm", baseUrl: f.baseUrl, key: KEY }] });
+    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "p" }, user)).toMatchObject({ ok: true, models: ["litellm/a"] });
+    expect(f.requests[0].headers.authorization?.startsWith("Bearer ")).toBe(true);
   });
 });

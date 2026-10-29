@@ -4,7 +4,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
-import { createCredentials } from "./auth.js";
+import { createBackendAuth, readBackends } from "./backends.js";
 import { createExecutor } from "./executor.js";
 import { loadScopedPools, splitPoolKey } from "./pools.js";
 import { probeAll } from "./probes/index.js";
@@ -39,11 +39,12 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     const value = (await ctx.config.get(companyId))[key];
     return typeof value === "string" && value ? value : undefined;
   };
-  const credentials = createCredentials(ctx);
-  // Hosts in the scheduler's list carry "<companyId>:<serverId>" ids; their credential is a name in that company's config.
+  const backendAuth = createBackendAuth(ctx);
+  const backendsFor = async (companyId: string) => readBackends(await ctx.config.get(companyId));
+  // Hosts in the scheduler's list carry "<companyId>:<id>" ids; their key belongs to their backend in that company.
   const hostHeaders = async (host: HostConfig) => {
     const parts = splitPoolKey(host.id);
-    return parts ? credentials.headersFor(parts.companyId, host.credential) : undefined;
+    return parts ? backendAuth.headersFor(parts.companyId, host.backendId) : undefined;
   };
   const executor = createExecutor({ ctx, store, queueLabelId: (companyId) => configId(companyId, "queueLabelId") });
   // Alerts without a company (plugin errors) go only to companies that use the plugin.
@@ -66,7 +67,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const cycle = (reason: string) => {
     chain = chain.then(async () => {
       try {
-        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, now: now() });
+        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, backendsFor, now: now() });
         companies.markDenied(snapshot.diagnostics?.skippedCompanies ?? []);
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
@@ -96,7 +97,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const probeTick = async () => {
     try {
-      const pools = await loadScopedPools(store, (await companies.list()).map((c) => c.id));
+      const pools = await loadScopedPools(store, (await companies.list()).map((c) => c.id), backendsFor);
       const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), headers: hostHeaders, now });
       await store.hosts.set(statuses);
       for (const change of changes) ctx.logger.info("Model capacity host changed", { hostId: change.hostId, up: change.up });
@@ -155,7 +156,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, credentials, snapshot: () => lastSnapshot };
+  return { start, stop, cycle, schedule, probeTick, idle, health, store, executor, backendAuth, backendsFor, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;

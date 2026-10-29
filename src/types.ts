@@ -18,15 +18,14 @@ export interface HostConfig {
   engine: EngineKind;
   baseUrl: string;
   declaredSlots: number;
-  // Name of a company credential (Credential 1–4) sent with health checks and Check server.
-  credential?: string;
+  // The backend whose key is sent with health checks (backends.ts).
+  backendId?: string;
 }
 
-// Where a pool's API lives: used by Load models, and for a local engine also checked directly as the pool's server.
+// Where a pool's API lives, taken from its backend: used by Load models, and for a local engine also health-checked.
 export interface PoolEndpoint {
   baseUrl?: string;
-  credential?: string;
-  // Local engines: how many requests the server runs at once when it doesn't report slots.
+  backendId?: string;
   slots?: number;
 }
 
@@ -46,9 +45,12 @@ export interface CompanyFilter {
 export interface PoolConfig {
   id: string;
   name: string;
-  // The model API this pool covers (apis.ts); every pattern starts with the pool's prefix.
+  // The backend (backends.ts) this pool's models go through; its type, prefix, address and key apply to the pool.
+  backend?: string;
+  // Proxy pools: local-engine backends behind the proxy whose health and load the pool also watches.
+  watch?: string[];
+  // Derived from the backend when the scheduler loads pools (pools.ts); older pools may still carry them.
   api?: ApiKind;
-  // Model-name prefix the pool's agents use for this API; defaults to the API's suggestion.
   prefix?: string;
   endpoint?: PoolEndpoint;
   patterns: string[];

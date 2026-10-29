@@ -1,6 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
-import { credentialsConfigSchema } from "./auth.js";
+import { backendsConfigSchema } from "./backends.js";
 import { PRUNE_CRON, SWEEP_CRON } from "./constants.js";
 
 const manifest: PaperclipPluginManifestV1 = {
@@ -47,12 +47,12 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   instanceConfigSchema: {
     type: "object",
-    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. The settings here are optional: how held tasks are labelled, where alerts are posted, and Credential 1–4 for any endpoint or backend that needs a key (pools and backends refer to a credential by its name).",
+    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. Backends and pools are set on Company settings → Model capacity. The two settings here are optional: how held tasks are labelled and where alerts are posted.",
     additionalProperties: false,
     properties: {
       queueLabelId: { type: "string", title: "Queue label", description: "Existing label added to held tasks (optional)." },
       alertIssueId: { type: "string", title: "Alert task", description: "Unassigned standing task that gets alert comments (optional)." },
-      ...credentialsConfigSchema,
+      ...backendsConfigSchema,
     },
   },
   ui: {
