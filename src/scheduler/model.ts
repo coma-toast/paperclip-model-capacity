@@ -10,6 +10,8 @@ const stringModel = (value: unknown) => (typeof value === "string" && value !== 
 const overrideModel = (issue: Pick<Issue, "assigneeAdapterOverrides">) =>
   stringModel(issue.assigneeAdapterOverrides?.adapterConfig?.model);
 
+export const agentModel = (agent: Pick<Agent, "adapterConfig">) => stringModel(agent.adapterConfig?.model);
+
 // Mirrors the host (heartbeat.js): the task's override applies only when the run's agent is the task's assignee.
 export const effectiveModel = (issue: IssueModelFields, agent: AgentModelFields): string | undefined =>
   (issue.assigneeAgentId === agent.id ? overrideModel(issue) : undefined) ?? stringModel(agent.adapterConfig?.model);

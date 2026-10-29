@@ -124,6 +124,8 @@ export interface Snapshot {
   released: ReleasedTask[];
   // Pools an operator put on hold (F2): nothing new is released.
   heldPools: string[];
+  // Agents an operator exempted (F4): their tasks never wait but still count (B5). Task exemptions are on OpenTask.
+  exemptAgentIds?: string[];
 }
 
 export type AlertKind =
