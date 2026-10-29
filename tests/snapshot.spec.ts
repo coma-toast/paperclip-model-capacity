@@ -101,6 +101,26 @@ describe("buildSnapshot", () => {
   });
 });
 
+describe("unconfigured companies", () => {
+  it("skips a company the host won't let the plugin read, and keeps the others", async () => {
+    const { harness, deps } = await setup();
+    const list = harness.ctx.issues.list;
+    harness.ctx.issues.list = async (input) => {
+      if (input.companyId === "c2") throw Object.assign(new Error('Plugin "x" is not allowed to perform "issues.list": company context is required'), { name: "InvocationScopeDeniedError" });
+      return list(input);
+    };
+    const s = await buildSnapshot(deps);
+    expect(new Set(s.tasks.map((t) => t.companyId))).toEqual(new Set(["c1"]));
+    expect(s.runs.every((r) => r.companyId === "c1")).toBe(true);
+  });
+
+  it("still fails the cycle on other errors", async () => {
+    const { harness, deps } = await setup();
+    harness.ctx.issues.list = async () => { throw new Error("database down"); };
+    await expect(buildSnapshot(deps)).rejects.toThrow("database down");
+  });
+});
+
 describe("agent cache", () => {
   it("serves agents from cache until the TTL passes or it is invalidated", async () => {
     const { harness } = await setup();

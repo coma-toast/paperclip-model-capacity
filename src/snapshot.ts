@@ -8,6 +8,10 @@ import type { OpenTask, PoolConfig, RunningRun, Snapshot, TaskPriority } from ".
 
 export const PAGE_SIZE = 200;
 
+// The host refuses company-scoped calls for a company the plugin isn't configured for.
+export const isScopeDenied = (e: unknown) =>
+  e instanceof Error && (e.name === "InvocationScopeDeniedError" || /company context is required|invocation scope|is not allowed to perform/.test(e.message));
+
 export interface RunRow {
   id: string;
   company_id: string;
@@ -104,13 +108,23 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   const exemptIssues = new Set(exemptions.issueIds);
   const issuesById = new Map<string, Issue>();
   const agentsByCompany = new Map<string, Map<string, Agent>>();
+  const skippedCompanies: string[] = [];
   for (const company of companies) {
-    agentsByCompany.set(company.id, await agents.get(company.id));
-    for (const status of OPEN_TASK_STATUSES) {
-      const page = await pageAll((offset) => ctx.issues.list({ companyId: company.id, status, limit: PAGE_SIZE, offset }));
-      for (const issue of page) issuesById.set(issue.id, issue);
+    try {
+      const companyAgents = await agents.get(company.id);
+      const companyIssues: Issue[] = [];
+      for (const status of OPEN_TASK_STATUSES) {
+        companyIssues.push(...(await pageAll((offset) => ctx.issues.list({ companyId: company.id, status, limit: PAGE_SIZE, offset }))));
+      }
+      agentsByCompany.set(company.id, companyAgents);
+      for (const issue of companyIssues) issuesById.set(issue.id, issue);
+    } catch (e) {
+      if (!isScopeDenied(e)) throw e;
+      // The plugin only acts on companies that have its config saved; others are left out, not an error.
+      skippedCompanies.push(company.id);
     }
   }
+  if (skippedCompanies.length) ctx.logger.debug("Model capacity skipped companies without plugin config", { companies: skippedCompanies });
 
   const poolOf = (model: string | undefined): PoolConfig | undefined => matchPool(model, pools);
   const rows = (await readRuns()) ?? activeRunRows([...issuesById.values()]);
