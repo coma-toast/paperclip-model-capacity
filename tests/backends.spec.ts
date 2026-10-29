@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
-import { backendBaseUrl, backendPrefix, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
+import { backendBaseUrl, backendPrefix, probeBaseUrl, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
 import manifest from "../src/manifest.js";
 
 const KEY = { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" };
@@ -19,6 +19,8 @@ describe("backends", () => {
     expect(backendPrefix({ type: "litellm", prefix: "" })).toBe("");
     expect(backendBaseUrl({ type: "openrouter" })).toMatch(/^https:\/\/openrouter\.ai/);
     expect(backendBaseUrl({ type: "ollama", baseUrl: " http://box:11434 " })).toBe("http://box:11434");
+    expect(probeBaseUrl({ type: "opencode" })).toBe("https://opencode.ai/zen");
+    expect(probeBaseUrl({ type: "openai", baseUrl: "https://api.example.com/v1/" })).toBe("https://api.example.com");
   });
 
   it("builds auth headers from the backend's secret, with its own header and scheme", async () => {
