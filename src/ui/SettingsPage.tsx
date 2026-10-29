@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
+import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { InspectHostResult } from "../api.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
@@ -16,14 +16,14 @@ const ENGINES: { value: EngineKind; label: string }[] = [
   { value: "lmstudio", label: "LM Studio" },
 ];
 
-const PLACED = /^pools\[\d+\]\.(name|id|limit|alertAfterMinutes|patterns|mode|privacy|scope|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots))$/;
+const PLACED = /^pools\[\d+\]\.(name|id|limit|alertAfterMinutes|patterns|mode|privacy|hosts\[\d+\]\.(id|name|engine|baseUrl|declaredSlots))$/;
 
 // Blank pattern lines are kept while typing (so Enter starts a new line) and dropped on save.
 const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
 
 // A9: a new pool starts in observe mode.
 const newPool = (n: number): PoolConfig => ({
-  id: `pool-${n}`, name: `Pool ${n}`, patterns: [], limit: 1, privacy: "shared", mode: "observe", scope: "instance", hosts: [], alertAfterMinutes: 30,
+  id: `pool-${n}`, name: `Pool ${n}`, patterns: [], limit: 1, privacy: "shared", mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
 });
 const newHost = (n: number): HostConfig => ({ id: `host-${n}`, name: `Host ${n}`, engine: "llamacpp", baseUrl: "http://", declaredSlots: 1 });
 
@@ -73,7 +73,7 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
   );
 };
 
-const HostRow = ({ host, poolId, error, onChange, onRemove }: { host: HostConfig; poolId: string; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
+const HostRow = ({ host, poolId, companyId, error, onChange, onRemove }: { host: HostConfig; poolId: string; companyId: string; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
   const inspect = usePluginAction("inspect-host");
   const [report, setReport] = useState<InspectHostResult | null>(null);
   const [problem, setProblem] = useState<string>();
@@ -81,7 +81,7 @@ const HostRow = ({ host, poolId, error, onChange, onRemove }: { host: HostConfig
   const check = async () => {
     setChecking(true);
     setProblem(undefined);
-    const r = (await inspect({ host, poolId }).catch((e: Error) => ({ ok: false, error: e.message }))) as InspectHostResult | { ok: false; error?: string };
+    const r = (await inspect({ host, poolId, companyId }).catch((e: Error) => ({ ok: false, error: e.message }))) as InspectHostResult | { ok: false; error?: string };
     setChecking(false);
     if (r.ok) setReport(r);
     else {
@@ -112,8 +112,8 @@ const HostRow = ({ host, poolId, error, onChange, onRemove }: { host: HostConfig
   );
 };
 
-const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+const PoolCard = ({ pool, companyId, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
@@ -146,7 +146,7 @@ const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
           onChange={(e) => onChange({ patterns: e.target.value.split("\n") })} />
       </Field>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mode" error={err("mode")}>
           <Choice value={pool.mode} onChange={(mode) => onChange({ mode })} options={[
             { value: "observe", label: "Observe", hint: "Log what it would hold; change nothing" },
@@ -159,19 +159,13 @@ const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
             { value: "shared", label: "Shared", hint: "Cloud or third-party models" },
           ]} />
         </Field>
-        <Field label="Limit applies to" error={err("scope")}>
-          <Choice value={pool.scope} onChange={(scope) => onChange({ scope })} options={[
-            { value: "instance", label: "All companies", hint: "One limit shared by everyone" },
-            { value: "company", label: "Each company", hint: "Every company gets its own limit" },
-          ]} />
-        </Field>
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
         <SectionTitle title="Model servers" hint="Optional. With servers listed, the pool also stops releasing work when they are down or busy with work from outside Paperclip. Check server shows what a server is running right now." />
         {pool.hosts.length === 0 ? <span style={MUTED}>No servers: only the limit above applies.</span> : null}
         {pool.hosts.map((h, k) => (
-          <HostRow key={k} host={h} poolId={pool.id} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
+          <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
         ))}
         <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add server</Button></div>
       </div>
@@ -180,8 +174,9 @@ const PoolCard = ({ pool, index, errorsFor, onChange, onRemove }: {
 };
 
 // H4: edit pools and their servers. Per-company settings (queue label, alert task, secret refs) are on the host's plugin config form.
-export const SettingsPage = (_props: PluginSettingsPageProps) => {
-  const config = usePluginData<{ pools: PoolConfig[] }>("pools-config");
+export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
+  const companyId = context.companyId;
+  const config = usePluginData<{ pools: PoolConfig[] }>("pools-config", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
@@ -195,6 +190,7 @@ export const SettingsPage = (_props: PluginSettingsPageProps) => {
     }
   }, [config.data, pools]);
 
+  if (!companyId) return <div style={{ padding: 16 }}>Pools are set per company: open a company's settings, then Model capacity.</div>;
   if (!pools) return <Spinner />;
   const dirty = JSON.stringify(cleaned(pools)) !== saved;
   const update = (i: number, patch: Partial<PoolConfig>) => setPools(pools.map((p, j) => (j === i ? { ...p, ...patch } : p)));
@@ -203,7 +199,7 @@ export const SettingsPage = (_props: PluginSettingsPageProps) => {
   const unplaced = errors.filter((e) => !PLACED.test(e.field));
   const onSave = async () => {
     setSaving(true);
-    const r = (await save({ pools: cleaned(pools) })) as Result;
+    const r = (await save({ companyId, pools: cleaned(pools) })) as Result;
     setSaving(false);
     setErrors(r.errors ?? []);
     if (r.ok) {
@@ -230,7 +226,7 @@ export const SettingsPage = (_props: PluginSettingsPageProps) => {
       <div style={{ display: "grid", gap: 4 }}>
         <strong style={{ fontSize: 18 }}>Model capacity pools</strong>
         <span style={{ ...MUTED, fontSize: 13 }}>
-          A pool caps how many agent runs can use a group of models at once. Extra tasks wait in a queue and start in priority order when a slot frees.
+          These pools apply to this company only. A pool caps how many of this company's agent runs can use a group of models at once. Extra tasks wait in a queue and start in priority order when a slot frees.
           New pools start in <strong>Observe</strong>: the plugin only logs what it would hold until you switch the pool to <strong>Enforce</strong>.
         </span>
       </div>
@@ -242,7 +238,7 @@ export const SettingsPage = (_props: PluginSettingsPageProps) => {
       ) : null}
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Add one to start.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>

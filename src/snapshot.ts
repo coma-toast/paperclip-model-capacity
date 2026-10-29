@@ -1,6 +1,7 @@
 import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK } from "./constants.js";
+import { loadHeldPoolKeys, loadScopedPools } from "./pools.js";
 import { matchPool } from "./scheduler/match.js";
 import { agentModel, effectiveModel, isPinned } from "./scheduler/model.js";
 import type { Store } from "./state/store.js";
@@ -126,10 +127,14 @@ export interface SnapshotDeps {
 }
 
 export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
-  const [pools, hosts, holds, released, overrides, heldPools, exemptions] = await Promise.all([
-    store.pools.get(), store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.heldPools.get(), store.exemptions.get(),
+  const [hosts, holds, released, overrides, exemptions] = await Promise.all([
+    store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
   ]);
-  const companies = listCompanies ? await listCompanies() : await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+  const known = listCompanies ? await listCompanies() : await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+  const pools = await loadScopedPools(store, known.map((c) => c.id));
+  const heldPools = await loadHeldPoolKeys(store, known.map((c) => c.id));
+  // A company with no pools has nothing to limit, so its tasks and agents aren't read at all.
+  const companies = known.filter((c) => pools.some((p) => p.companyId === c.id));
   const exemptIssues = new Set(exemptions.issueIds);
   const issuesById = new Map<string, Issue>();
   const agentsByCompany = new Map<string, Map<string, Agent>>();
@@ -151,7 +156,9 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   }
   if (skippedCompanies.length) ctx.logger.debug("Model capacity skipped companies without plugin config", { companies: skippedCompanies });
 
-  const poolOf = (model: string | undefined): PoolConfig | undefined => matchPool(model, pools);
+  // A task or run only ever counts against its own company's pools.
+  const poolOf = (companyId: string, model: string | undefined): PoolConfig | undefined =>
+    matchPool(model, pools.filter((p) => p.companyId === companyId));
   const dbRows = await readRuns();
   const rows = dbRows ?? activeRunRows([...issuesById.values()]);
   const runs: RunningRun[] = [];
@@ -164,7 +171,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     const model = issue ? effectiveModel(issue, agent) : agentModel(agent);
     runs.push({
       runId: row.id, issueId: row.issue_id ?? "", agentId: row.agent_id, companyId: row.company_id,
-      poolId: poolOf(model)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at),
+      poolId: poolOf(row.company_id, model)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at),
       agentName: agent.name, issueIdentifier: issue?.identifier ?? undefined,
     });
   }
@@ -174,7 +181,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   for (const issue of issuesById.values()) {
     const agent = issue.assigneeAgentId ? agentsByCompany.get(issue.companyId)?.get(issue.assigneeAgentId) : undefined;
     if (!agent) continue;
-    const pool = poolOf(effectiveModel(issue, agent));
+    const pool = poolOf(issue.companyId, effectiveModel(issue, agent));
     if (!pool) continue;
     tasks.push({
       issueId: issue.id, companyId: issue.companyId, agentId: agent.id, poolId: pool.id, priority: toPriority(issue.priority),

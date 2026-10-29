@@ -47,6 +47,9 @@ export interface PoolConfig {
   // Model a task gets when it overflows into this pool (D2).
   overflowModel?: string;
   alertAfterMinutes: number;
+  // Set by the plugin on the scheduler's copy: the owning company and the pool's id within it (see pools.ts).
+  companyId?: string;
+  localId?: string;
 }
 
 export interface HostStatus {

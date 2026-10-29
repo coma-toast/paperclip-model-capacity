@@ -56,7 +56,7 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "dashboardWidget", id: "capacity-widget", displayName: "Model capacity", exportName: "DashboardWidget" },
       { type: "page", id: "capacity-page", displayName: "Model capacity", exportName: "CapacityPage", routePath: "model-capacity" },
-      { type: "settingsPage", id: "capacity-settings", displayName: "Model capacity", exportName: "SettingsPage" },
+      { type: "companySettingsPage", id: "capacity-settings", displayName: "Model capacity", exportName: "SettingsPage", routePath: "model-capacity" },
     ],
   },
 };

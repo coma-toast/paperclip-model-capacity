@@ -44,7 +44,9 @@ const setup = async (runs: RunRow[] | "unavailable" = RUNS) => {
   const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
   harness.seed({ companies: [company("c1"), company("c2")], agents: AGENTS, issues: ISSUES });
   const store = createStore(harness.ctx.state);
-  await store.pools.set(POOLS);
+  // Both companies set up the same pools; each gets its own limits.
+  await store.companyPools("c1").set(POOLS);
+  await store.companyPools("c2").set(POOLS);
   const deps = { ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => (runs === "unavailable" ? undefined : runs), now: new Date(NOW) };
   return { harness, store, deps };
 };
@@ -56,11 +58,11 @@ describe("buildSnapshot", () => {
   it("counts open tasks and runs per pool", async () => {
     const { deps } = await setup();
     const s = await buildSnapshot(deps);
-    // gpu: i1, i2 (c1) and i8 (c2). free: i3 (override), i4, i10, i11. Closed, backlog, unassigned and unmatched are left out.
-    expect(byPool(s.tasks)).toEqual({ gpu: 3, free: 4 });
+    // gpu: i1, i2 (c1) and i8 (c2). free: i3 (override), i4 (c1), i10, i11 (c2). Closed, backlog, unassigned and unmatched are left out.
+    expect(byPool(s.tasks)).toEqual({ "c1:gpu": 2, "c2:gpu": 1, "c1:free": 2, "c2:free": 2 });
     expect(s.tasks.map((t) => t.issueId).sort()).toEqual(["i1", "i10", "i11", "i2", "i3", "i4", "i8"]);
     // r3 has no task, so it counts on its agent's own model.
-    expect(byPool(s.runs)).toEqual({ gpu: 2, free: 1 });
+    expect(byPool(s.runs)).toEqual({ "c1:gpu": 1, "c2:gpu": 1, "c2:free": 1 });
   });
 
   it("marks tasks with a run, the override's pool and pins", async () => {
@@ -70,7 +72,7 @@ describe("buildSnapshot", () => {
     expect(t("i1").hasActiveRun).toBe(true);
     expect(t("i2").hasActiveRun).toBe(false);
     expect(t("i2").priority).toBe("high");
-    expect(t("i3")).toMatchObject({ poolId: "free", pinned: true });
+    expect(t("i3")).toMatchObject({ poolId: "c1:free", pinned: true });
     expect(t("i1").pinned).toBe(false);
   });
 
@@ -78,26 +80,47 @@ describe("buildSnapshot", () => {
     const { deps, store } = await setup();
     await store.holds.set({ i2: { issueId: "i2", companyId: "c1", poolId: "gpu", priority: "high", heldAt: NOW } });
     await store.exemptions.set({ agentIds: ["a3"], issueIds: ["i11"] });
-    await store.heldPools.set(["free"]);
+    await store.companyHeldPools("c1").set(["free"]);
     const s = await buildSnapshot(deps);
     expect(s.holds.map((h) => h.issueId)).toEqual(["i2"]);
     expect(s.exemptAgentIds).toEqual(["a3"]);
     expect(s.tasks.find((x) => x.issueId === "i11")?.exempt).toBe(true);
-    expect(s.heldPools).toEqual(["free"]);
+    expect(s.heldPools).toEqual(["c1:free"]);
   });
 
   it("falls back to Issue.activeRun when the run table can't be read", async () => {
     const { harness, deps } = await setup("unavailable");
     harness.seed({ issues: [issue("i2", "c1", "a1", { activeRun: { id: "r9", status: "running", agentId: "a1", invocationSource: "assignment", triggerDetail: null, startedAt: NOW, finishedAt: null, createdAt: NOW } } as Partial<Issue>)] });
     const s = await buildSnapshot(deps);
-    expect(s.runs.map((r) => [r.runId, r.poolId])).toEqual([["r9", "gpu"]]);
+    expect(s.runs.map((r) => [r.runId, r.poolId])).toEqual([["r9", "c1:gpu"]]);
   });
 
-  it("feeds decide(): the full gpu pool holds its waiting tasks", async () => {
+  it("feeds decide(): each company's full gpu pool holds its own waiting task", async () => {
     const { deps } = await setup();
     const actions = decide(await buildSnapshot(deps));
-    // gpu is instance-wide with limit 1 and has 2 runs, so i2 and i8 wait (high before medium).
-    expect(actions.filter((a) => a.kind === "hold").map((a) => (a.kind === "hold" ? [a.issueId, a.position] : []))).toEqual([["i2", 1], ["i8", 2]]);
+    // Each company's gpu pool has limit 1 and one run, so c1's i2 and c2's i8 each wait first in their own queue.
+    expect(actions.filter((a) => a.kind === "hold").map((a) => (a.kind === "hold" ? [a.issueId, a.poolId, a.position] : []))).toEqual([["i2", "c1:gpu", 1], ["i8", "c2:gpu", 1]]);
+  });
+});
+
+describe("per-company pools", () => {
+  it("doesn't read a company that has no pools", async () => {
+    const { harness, deps, store } = await setup();
+    await store.companyPools("c2").set([]);
+    const seen: string[] = [];
+    const list = harness.ctx.issues.list;
+    harness.ctx.issues.list = async (input) => { seen.push(input.companyId); return list(input); };
+    const s = await buildSnapshot(deps);
+    expect(new Set(seen)).toEqual(new Set(["c1"]));
+    expect(s.pools.map((p) => p.id)).toEqual(["c1:gpu", "c1:free"]);
+  });
+
+  it("matches a task only against its own company's pools", async () => {
+    const { deps, store } = await setup();
+    await store.companyPools("c2").set([pool("other", { patterns: ["*"] })]);
+    const s = await buildSnapshot(deps);
+    expect(s.tasks.find((t) => t.issueId === "i8")?.poolId).toBe("c2:other");
+    expect(s.tasks.find((t) => t.issueId === "i1")?.poolId).toBe("c1:gpu");
   });
 });
 

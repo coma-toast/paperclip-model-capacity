@@ -5,6 +5,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DEFAULT_PROBE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { createExecutor } from "./executor.js";
+import { loadScopedPools } from "./pools.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, createAgentCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
@@ -82,7 +83,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const probeTick = async () => {
     try {
-      const pools = await store.pools.get();
+      const pools = await loadScopedPools(store, (await companies.list()).map((c) => c.id));
       const { statuses, changes } = await probeAll(pools, await store.hosts.get(), { fetch: (url, init) => ctx.http.fetch(url, init), now });
       await store.hosts.set(statuses);
       for (const change of changes) ctx.logger.info("Model capacity host changed", { hostId: change.hostId, up: change.up });
