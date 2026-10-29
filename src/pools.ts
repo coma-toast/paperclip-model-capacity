@@ -40,8 +40,14 @@ export const scopedPools = (companyId: string, pools: PoolConfig[], backends: Ba
 
 export type BackendsFor = (companyId: string) => Promise<Backend[]>;
 
+// Reads a company's backends (its plugin config) only when one of its pools uses a backend. The host refuses proactive
+// config reads for companies without a plugin config row, and one refusal would fail the whole cycle.
 export const loadScopedPools = async (store: Store, companyIds: string[], backendsFor: BackendsFor = async () => []) =>
-  (await Promise.all(companyIds.map(async (id) => scopedPools(id, await store.companyPools(id).get(), await backendsFor(id))))).flat();
+  (await Promise.all(companyIds.map(async (id) => {
+    const pools = await store.companyPools(id).get();
+    const needsBackends = pools.some((p) => p.backend || p.watch?.length);
+    return scopedPools(id, pools, needsBackends ? await backendsFor(id) : []);
+  }))).flat();
 
 export const loadHeldPoolKeys = async (store: Store, companyIds: string[]) =>
   (await Promise.all(companyIds.map(async (id) => (await store.companyHeldPools(id).get()).map((p) => poolKey(id, p))))).flat();

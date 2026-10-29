@@ -138,7 +138,9 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   };
 
   const start = () => {
-    ctx.jobs.register("sweep", async () => cycle("sweep"));
+    // Jobs run in a host invocation with no company, where per-company calls (config.get) are refused; as proactive
+    // work they're allowed for the plugin's configured companies.
+    ctx.jobs.register("sweep", async () => outsideInvocation(() => cycle("sweep")));
     ctx.jobs.register("prune", async () => {
       const removed = await store.pruneHistory(now(), HISTORY_RETENTION_DAYS);
       ctx.logger.info("Model capacity pruned history", { days: removed });
