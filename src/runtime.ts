@@ -30,8 +30,8 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => {
   const now = opts.now ?? (() => new Date());
   const store = createStore(ctx.state);
+  const listCompanies = createCompanyLister(ctx, store);
   const agents = createAgentCache(ctx);
-  const listCompanies = createCompanyLister(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
   const configId = async (companyId: string, key: string) => {
     const value = (await ctx.config.get(companyId))[key];

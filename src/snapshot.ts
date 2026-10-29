@@ -78,13 +78,18 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
 
 // Keeps the last good company list: the host can refuse a proactive companies.list while another invocation is in
 // flight, and one refused call shouldn't stop a cycle.
-export const createCompanyLister = (ctx: PluginContext) => {
+export const createCompanyLister = (ctx: PluginContext, store?: Store) => {
   let last: Company[] | undefined;
-  return async () => {
+  return async (): Promise<Company[]> => {
     try {
       last = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
+      await store?.companies.set(last.map((c) => ({ id: c.id, name: c.name })));
     } catch (e) {
-      if (!last) throw e;
+      if (!last) {
+        const saved = (await store?.companies.get()) ?? [];
+        if (!saved.length) throw e;
+        last = saved as unknown as Company[];
+      }
       ctx.logger.warn("companies.list failed; using the last known list", { error: e instanceof Error ? e.message : String(e) });
     }
     return last;
