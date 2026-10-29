@@ -71,7 +71,8 @@ describe("inspectHost", () => {
   });
 });
 
-describe("inspect-host action", () => {
+describe("backend check actions", () => {
+  const KEY = { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" };
   const setup = async () => {
     const harness = createTestHarness({ manifest });
     const runtime = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
@@ -80,19 +81,45 @@ describe("inspect-host action", () => {
     return harness;
   };
   const user = { actor: { type: "user" as const, userId: "u1" } };
+  const fake = async (routes: Routes) => {
+    const f = await startFake(routes);
+    open.push(f);
+    return f;
+  };
 
-  it("is board-only and checks the address", async () => {
+  it("test-backend is board-only and checks the type and address", async () => {
     const harness = await setup();
-    expect(await harness.performAction("inspect-host", { host: { engine: "openai", baseUrl: "http://x" } }, { actor: { type: "agent", agentId: "a1" } })).toMatchObject({ ok: false });
-    expect(await harness.performAction("inspect-host", { host: { engine: "openai", baseUrl: "file:///etc/passwd" } }, user)).toEqual({ ok: false, error: "The address must start with http:// or https://" });
-    expect(await harness.performAction("inspect-host", { host: { engine: "nope", baseUrl: "http://x" } }, user)).toEqual({ ok: false, error: "Pick a server type first" });
+    const backend = { name: "API", type: "openai", baseUrl: "http://x" };
+    expect(await harness.performAction("test-backend", { companyId: "c1", backend }, { actor: { type: "agent", agentId: "a1" } })).toMatchObject({ ok: false });
+    expect(await harness.performAction("test-backend", { companyId: "c1", backend: { ...backend, baseUrl: "file:///etc/passwd" } }, user)).toEqual({ ok: false, error: "The address must start with http:// or https://" });
+    expect(await harness.performAction("test-backend", { companyId: "c1", backend: { ...backend, type: "nope" } }, user)).toEqual({ ok: false, error: "Pick the backend's type" });
   });
 
-  it("returns what the server runs, for an unsaved host", async () => {
+  it("test-backend lists an unsaved backend's models with the typed key, and inspects a local engine", async () => {
     const harness = await setup();
-    const f = await startFake(openAiRoutes());
-    open.push(f);
-    const r = await harness.performAction<InspectHostResult>("inspect-host", { host: { engine: "openai", baseUrl: `${f.baseUrl}/` }, poolId: "gpu" }, user);
-    expect(r).toMatchObject({ ok: true, server: { up: true, models: [{ name: "gpu" }] }, poolRuns: [] });
+    const f = await fake(openAiRoutes());
+    const r = await harness.performAction<{ ok: boolean; models: unknown; server?: unknown }>("test-backend", { companyId: "c1", backend: { name: "Box", type: "omlx", baseUrl: `${f.baseUrl}/` }, key: "typed" }, user);
+    expect(r).toMatchObject({ ok: true, models: { ok: true, models: ["gpu"] }, server: { up: true } });
+    expect(f.requests.every((q) => q.headers.authorization === "Bearer typed")).toBe(true);
+  });
+
+  it("test-backend never sends a saved key to a new address", async () => {
+    const harness = await setup();
+    const saved = await fake(openAiRoutes());
+    const other = await fake(openAiRoutes());
+    harness.setConfig({ backends: [{ id: "p", name: "Proxy", type: "litellm", baseUrl: saved.baseUrl, key: KEY }] });
+    await harness.performAction("test-backend", { companyId: "c1", backend: { id: "p", name: "Proxy", type: "litellm", baseUrl: saved.baseUrl } }, user);
+    expect(saved.requests[0].headers.authorization?.startsWith("Bearer ")).toBe(true);
+    await harness.performAction("test-backend", { companyId: "c1", backend: { id: "p", name: "Proxy", type: "litellm", baseUrl: other.baseUrl } }, user);
+    expect(other.requests[0].headers.authorization).toBeUndefined();
+  });
+
+  it("inspect-backend returns what a saved backend runs", async () => {
+    const harness = await setup();
+    const f = await fake(openAiRoutes());
+    harness.setConfig({ backends: [{ id: "box", name: "Box", type: "openai", baseUrl: f.baseUrl }] });
+    expect(await harness.performAction("inspect-backend", { companyId: "c1", backendId: "nope" }, user)).toEqual({ ok: false, error: "No such backend" });
+    const r = await harness.performAction<InspectHostResult>("inspect-backend", { companyId: "c1", backendId: "box" }, user);
+    expect(r).toMatchObject({ ok: true, server: { up: true, models: [{ name: "gpu" }] }, usedAuth: false, poolRuns: [] });
   });
 });

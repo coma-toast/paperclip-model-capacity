@@ -1,10 +1,10 @@
 import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { collectAgentModels } from "./agentModels.js";
-import { APIS, inferApi, type ApiKind } from "./apis.js";
-import { summarizeCredentials } from "./auth.js";
+import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
+import { backendBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
 import { PRIORITY_RANK } from "./constants.js";
-import { listApiModels } from "./models.js";
+import { listBackendModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import type { Runtime } from "./runtime.js";
@@ -100,7 +100,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     return {
       now: last?.now ?? now().toISOString(), hosts: await store.hosts.get(), runs: last?.runs ?? [], tasks: last?.tasks ?? [],
       released: last?.released ?? Object.values(await store.released.get()), diagnostics: last?.diagnostics,
-      pools: await loadScopedPools(store, ids), holds: Object.values(await store.holds.get()).filter((h) => !companyId || h.companyId === companyId),
+      pools: await loadScopedPools(store, ids, runtime.backendsFor), holds: Object.values(await store.holds.get()).filter((h) => !companyId || h.companyId === companyId),
       heldPools: await loadHeldPoolKeys(store, ids),
     };
   };
@@ -161,10 +161,10 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
   // The settings page edits one company's pools, with their own ids (not the scheduler's keys).
   ctx.data.register("pools-config", async (params) => {
     const companyId = companyOf(params);
-    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get(), credentials: [] };
+    if (!companyId) return { pools: [], heldPools: [], exemptions: await store.exemptions.get(), backends: [] };
     return {
       pools: await store.companyPools(companyId).get(), heldPools: await store.companyHeldPools(companyId).get(), exemptions: await store.exemptions.get(),
-      credentials: summarizeCredentials(await ctx.config.get(companyId)),
+      backends: summarizeBackends(await ctx.config.get(companyId)),
     };
   });
 
@@ -180,51 +180,91 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
       return result;
     });
 
-  // "Check server": asks the server what it is running now. Takes the host as edited on the settings page, so it works
-  // before saving; only http(s) addresses, GET-only, and only for board users since it reaches out to the network.
-  ctx.actions.register("inspect-host", async (params, context) => {
-    if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can check servers" };
-    const host = (params.host ?? {}) as { engine?: unknown; baseUrl?: unknown };
-    const engine = host.engine as EngineKind;
-    if (!ENGINES.includes(engine)) return { ok: false, error: "Pick a server type first" };
-    let url: URL;
-    try {
-      url = new URL(String(host.baseUrl));
-    } catch {
-      return { ok: false, error: "Enter the server's address, like http://host:8080" };
-    }
-    if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: "The address must start with http:// or https://" };
-    const companyId = text(params.companyId) ?? context.companyId ?? undefined;
-    const credential = text((params.host as { credential?: unknown } | undefined)?.credential);
+  const forUser = (context: { actor: { type: string; userId: string | null } }) => context.actor.type === "user" && Boolean(context.actor.userId);
+  const companyFor = (params: Record<string, unknown>, context: { companyId: string | null }) => text(params.companyId) ?? context.companyId ?? undefined;
+  const savedBackend = async (companyId: string, id: unknown) => readBackends(await ctx.config.get(companyId)).find((b) => b.id === id);
+  const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+  // What a backend is running now (health, loaded models, slots) plus the Paperclip runs counted on a pool using it.
+  const inspect = async (backend: Pick<Backend, "type" | "baseUrl">, headers: Record<string, string> | undefined) => {
+    const info = apiInfo(backend.type);
+    const baseUrl = backendBaseUrl(backend);
+    if (!baseUrl) return undefined;
+    return inspectHost(info.engine ?? "openai", { baseUrl: baseUrl.replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init), headers });
+  };
+
+  // The Add/Edit backend form: checks a draft backend before it's saved. The key typed in the form is used for this
+  // one check only; it's stored (as a company secret) by the form's save, not here.
+  ctx.actions.register("test-backend", async (params, context) => {
+    if (!forUser(context)) return { ok: false, error: "Only board users can check backends" };
+    const companyId = companyFor(params, context);
+    const draft = (params.backend ?? {}) as Backend;
+    if (!APIS.some((a) => a.kind === draft.type)) return { ok: false, error: "Pick the backend's type" };
+    const address = backendBaseUrl(draft);
+    if (address && !/^https?:\/\//i.test(address)) return { ok: false, error: "The address must start with http:// or https://" };
     let headers: Record<string, string> | undefined;
-    try {
-      headers = companyId ? await runtime.credentials.headersFor(companyId, credential) : undefined;
-    } catch (e) {
-      return { ok: false, error: `Couldn't read credential "${credential}": ${e instanceof Error ? e.message : String(e)}` };
+    const key = text(params.key);
+    const saved = companyId && draft.id ? await savedBackend(companyId, draft.id) : undefined;
+    if (key) {
+      const scheme = draft.scheme === undefined ? "Bearer" : draft.scheme.trim();
+      headers = { [draft.header?.trim() || "Authorization"]: scheme ? `${scheme} ${key}` : key };
+    } else if (companyId && saved && backendBaseUrl(saved) === address) {
+      // The saved key only goes to the address it was saved for, never to a new one typed in the form.
+      try {
+        headers = await runtime.backendAuth.headersFor(companyId, saved.id);
+      } catch (e) {
+        return { ok: false, error: `Couldn't read the saved key: ${errText(e)}` };
+      }
     }
-    const server = await inspectHost(engine, { baseUrl: url.toString().replace(/\/+$/, ""), fetch: (u, init) => ctx.http.fetch(u, init), headers });
-    const snapshot = runtime.snapshot();
-    const poolId = text(params.poolId) && companyId ? poolKey(companyId, String(params.poolId)) : undefined;
-    const poolRuns: PoolRunRow[] = (snapshot?.runs ?? [])
-      .filter((r) => poolId && r.poolId === poolId)
-      .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
-    return { ok: true, server, usedAuth: Boolean(headers), poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
+    const models = await listBackendModels(ctx, draft, headers);
+    const server = apiInfo(draft.type).group === "local" ? await inspect(draft, headers) : undefined;
+    return { ok: true, models, server };
   });
 
-  // "Load models": what a pool's API offers, for picking models. Board-only because it calls out to the API.
-  ctx.actions.register("list-api-models", async (params, context) => {
-    if (context.actor.type !== "user" || !context.actor.userId) return { ok: false, error: "Only board users can load models" };
-    const companyId = text(params.companyId) ?? context.companyId ?? undefined;
-    const pool = (params.pool ?? {}) as Pick<PoolConfig, "api" | "patterns" | "endpoint">;
+  ctx.actions.register("list-backend-models", async (params, context) => {
+    if (!forUser(context)) return { ok: false, error: "Only board users can load models" };
+    const companyId = companyFor(params, context);
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
-    if (!APIS.some((a) => a.kind === pool.api)) return { ok: false, error: "Pick the pool's API first" };
-    return listApiModels(ctx, runtime.credentials, companyId, { ...pool, patterns: Array.isArray(pool.patterns) ? pool.patterns : [] });
+    const backend = await savedBackend(companyId, params.backendId);
+    if (!backend) return { ok: false, error: "Pick a backend for this pool first" };
+    try {
+      return await listBackendModels(ctx, backend, await runtime.backendAuth.headersFor(companyId, backend.id));
+    } catch (e) {
+      return { ok: false, error: `Couldn't read ${backend.name}'s key: ${errText(e)}` };
+    }
+  });
+
+  ctx.actions.register("inspect-backend", async (params, context) => {
+    if (!forUser(context)) return { ok: false, error: "Only board users can check backends" };
+    const companyId = companyFor(params, context);
+    if (!companyId) return { ok: false, error: "Open this from a company's settings" };
+    const backend = await savedBackend(companyId, params.backendId);
+    if (!backend) return { ok: false, error: "No such backend" };
+    let headers: Record<string, string> | undefined;
+    try {
+      headers = await runtime.backendAuth.headersFor(companyId, backend.id);
+    } catch (e) {
+      return { ok: false, error: `Couldn't read ${backend.name}'s key: ${errText(e)}` };
+    }
+    const server = await inspect(backend, headers);
+    if (!server) return { ok: false, error: `${backend.name} has no address` };
+    const snapshot = runtime.snapshot();
+    const pools = new Set((await store.companyPools(companyId).get()).filter((p) => p.backend === backend.id || p.watch?.includes(backend.id)).map((p) => poolKey(companyId, p.id)));
+    const poolRuns: PoolRunRow[] = (snapshot?.runs ?? []).filter((r) => r.poolId && pools.has(r.poolId))
+      .map((r) => ({ runId: r.runId, status: r.status, agentName: r.agentName, issueIdentifier: r.issueIdentifier, model: r.model, startedAt: r.startedAt }));
+    return { ok: true, server, usedAuth: Boolean(headers), poolRuns, countedAt: snapshot?.now } satisfies InspectHostResult;
   });
 
   boardAction("save-pools", async (params, _userId, companyId) => {
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
     const result = validatePools(params.pools);
     if (!result.ok) return { ok: false, errors: result.errors };
+    const backendIds = new Set(readBackends(await ctx.config.get(companyId)).map((b) => b.id));
+    const missing = result.pools.flatMap((p, i) => [
+      ...(p.backend && !backendIds.has(p.backend) ? [{ field: `pools[${i}].backend`, message: "That backend no longer exists" }] : []),
+      ...(p.watch ?? []).filter((id) => !backendIds.has(id)).map(() => ({ field: `pools[${i}].watch`, message: "A watched backend no longer exists" })),
+    ]);
+    if (missing.length) return { ok: false, errors: missing };
     await store.companyPools(companyId).set(result.pools);
     return { ok: true };
   });

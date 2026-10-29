@@ -9,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "api", "prefix", "endpoint", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
@@ -44,6 +44,30 @@ const validateHost = (raw: unknown, at: string, errors: FieldError[]): HostConfi
   return { ...(raw as unknown as HostConfig), declaredSlots: (raw.declaredSlots as number | undefined) ?? 1 };
 };
 
+// Limits, privacy, mode, alerting and overflow: the same for every pool, with or without a backend.
+const validateCommon = (raw: Record<string, unknown>, at: string, errors: FieldError[]) => {
+  if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
+  if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
+  if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });
+  if (raw.scope !== undefined && !["instance", "company"].includes(raw.scope as string)) errors.push({ field: `${at}.scope`, message: "Must be instance or company" });
+  if (raw.companies !== undefined) {
+    const c = raw.companies;
+    if (!isObject(c) || (c.include !== undefined && !isTextList(c.include)) || (c.exclude !== undefined && !isTextList(c.exclude))) {
+      errors.push({ field: `${at}.companies`, message: "include and exclude must be lists of company ids" });
+    }
+  }
+  if (raw.alertAfterMinutes !== undefined && !isWhole(raw.alertAfterMinutes, 1)) errors.push({ field: `${at}.alertAfterMinutes`, message: "Must be a whole number, 1 or more" });
+  if (raw.overflowModel !== undefined && !isText(raw.overflowModel)) errors.push({ field: `${at}.overflowModel`, message: "Must be text" });
+  if (raw.overflow !== undefined) {
+    if (!isObject(raw.overflow)) errors.push({ field: `${at}.overflow`, message: "Must be an object" });
+    else {
+      unknownFields(raw.overflow, OVERFLOW_FIELDS, `${at}.overflow`, errors);
+      if (!isTextList(raw.overflow.pools)) errors.push({ field: `${at}.overflow.pools`, message: "Must be a list of pool ids" });
+      if (raw.overflow.afterMinutes !== undefined && !isWhole(raw.overflow.afterMinutes, 1)) errors.push({ field: `${at}.overflow.afterMinutes`, message: "Must be a whole number, 1 or more" });
+    }
+  }
+};
+
 // A7 plus A9 defaults: rejects unknown fields, duplicate names and ids, bad limits, and overflow that breaks privacy (A10).
 export const validatePools = (input: unknown): ValidationResult => {
   const errors: FieldError[] = [];
@@ -64,6 +88,14 @@ export const validatePools = (input: unknown): ValidationResult => {
     names.add(String(raw.name).toLowerCase());
     if (!isTextList(raw.patterns) || !(raw.patterns as string[]).length) errors.push({ field: `${at}.patterns`, message: "Pick at least one model" });
     else if ((raw.patterns as string[]).some((p) => /[*?]/.test(p))) errors.push({ field: `${at}.patterns`, message: "Pick models from the list; wildcards aren't used" });
+    if (raw.backend !== undefined && !isText(raw.backend)) errors.push({ field: `${at}.backend`, message: "Pick a backend" });
+    if (raw.watch !== undefined && !(Array.isArray(raw.watch) && raw.watch.every(isText))) errors.push({ field: `${at}.watch`, message: "Must be a list of backends" });
+    // With a backend, the API, prefix and address come from it (checked against the company's backends on save).
+    if (isText(raw.backend)) {
+      pools.push({ ...(raw as unknown as PoolConfig), mode: (raw.mode as PoolConfig["mode"]) ?? "observe", scope: "instance", hosts: [], alertAfterMinutes: (raw.alertAfterMinutes as number | undefined) ?? DEFAULT_ALERT_AFTER_MINUTES });
+      validateCommon(raw, at, errors);
+      return;
+    }
     const api: ApiKind = raw.api === undefined ? inferApi(isTextList(raw.patterns) ? (raw.patterns as string[]) : []) : (raw.api as ApiKind);
     if (!APIS.some((a) => a.kind === api)) errors.push({ field: `${at}.api`, message: `Must be one of ${APIS.map((a) => a.kind).join(", ")}` });
     else {
@@ -86,18 +118,7 @@ export const validatePools = (input: unknown): ValidationResult => {
         if (endpoint?.slots !== undefined && !isWhole(endpoint.slots, 1)) errors.push({ field: `${at}.endpoint.slots`, message: "Must be a whole number, 1 or more" });
       }
     }
-    if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
-    if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
-    if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });
-    if (raw.scope !== undefined && !["instance", "company"].includes(raw.scope as string)) errors.push({ field: `${at}.scope`, message: "Must be instance or company" });
-    if (raw.companies !== undefined) {
-      const c = raw.companies;
-      if (!isObject(c) || (c.include !== undefined && !isTextList(c.include)) || (c.exclude !== undefined && !isTextList(c.exclude))) {
-        errors.push({ field: `${at}.companies`, message: "include and exclude must be lists of company ids" });
-      }
-    }
-    if (raw.alertAfterMinutes !== undefined && !isWhole(raw.alertAfterMinutes, 1)) errors.push({ field: `${at}.alertAfterMinutes`, message: "Must be a whole number, 1 or more" });
-    if (raw.overflowModel !== undefined && !isText(raw.overflowModel)) errors.push({ field: `${at}.overflowModel`, message: "Must be text" });
+    validateCommon(raw, at, errors);
     const hosts = Array.isArray(raw.hosts) ? raw.hosts.map((h, j) => validateHost(h, `${at}.hosts[${j}]`, errors)) : [];
     if (raw.hosts !== undefined && !Array.isArray(raw.hosts)) errors.push({ field: `${at}.hosts`, message: "Must be a list" });
     hosts.forEach((h, j) => {
@@ -105,14 +126,6 @@ export const validatePools = (input: unknown): ValidationResult => {
       if (hostIds.has(h.id)) errors.push({ field: `${at}.hosts[${j}].id`, message: `Another host already uses the id "${h.id}"` });
       hostIds.add(h.id);
     });
-    if (raw.overflow !== undefined) {
-      if (!isObject(raw.overflow)) errors.push({ field: `${at}.overflow`, message: "Must be an object" });
-      else {
-        unknownFields(raw.overflow, OVERFLOW_FIELDS, `${at}.overflow`, errors);
-        if (!isTextList(raw.overflow.pools)) errors.push({ field: `${at}.overflow.pools`, message: "Must be a list of pool ids" });
-        if (raw.overflow.afterMinutes !== undefined && !isWhole(raw.overflow.afterMinutes, 1)) errors.push({ field: `${at}.overflow.afterMinutes`, message: "Must be a whole number, 1 or more" });
-      }
-    }
     pools.push({
       ...(raw as unknown as PoolConfig),
       api,

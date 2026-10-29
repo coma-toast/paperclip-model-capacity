@@ -1,7 +1,6 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
 import { registerApi } from "./api.js";
-import { CREDENTIAL_SLOTS } from "./auth.js";
 import manifest from "./manifest.js";
 import { createRuntime, type Runtime } from "./runtime.js";
 
@@ -26,11 +25,16 @@ const plugin = definePlugin({
     const errors: string[] = [];
     for (const [key, value] of Object.entries(config)) {
       if (!CONFIG_KEYS.includes(key)) errors.push(`${key}: unknown setting`);
-      else if (CREDENTIAL_SLOTS.includes(key as (typeof CREDENTIAL_SLOTS)[number])) {
-        if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) errors.push(`${key}: must be an object`);
+      else if (key === "backends") {
+        if (value !== undefined && value !== null && !Array.isArray(value)) errors.push("backends: must be a list");
       } else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
     }
     return errors.length ? { ok: false, errors } : { ok: true };
+  },
+
+  // Backends live in the company config and are read on use, so a change needs no restart, just a fresh cycle.
+  async onConfigChanged() {
+    runtime?.schedule("config changed");
   },
 
   async onShutdown() {

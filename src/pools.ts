@@ -1,4 +1,5 @@
-import { apiInfo, inferApi } from "./apis.js";
+import { apiInfo } from "./apis.js";
+import { backendBaseUrl, backendPrefix, type Backend } from "./backends.js";
 import type { Store } from "./state/store.js";
 import type { HostConfig, PoolConfig } from "./types.js";
 
@@ -11,22 +12,36 @@ export const splitPoolKey = (key: string): { companyId: string; poolId: string }
   return i > 0 ? { companyId: key.slice(0, i), poolId: key.slice(i + 1) } : undefined;
 };
 
-// A pool pointed straight at a local engine checks that engine as its one server.
-export const endpointHost = (pool: PoolConfig): HostConfig[] => {
-  const info = apiInfo(pool.api ?? inferApi(pool.patterns));
-  const baseUrl = pool.endpoint?.baseUrl;
+// A local-engine backend is a server the plugin can check; anything else isn't.
+export const backendHost = (b: Backend): HostConfig[] => {
+  const info = apiInfo(b.type);
+  const baseUrl = backendBaseUrl(b);
   if (info.group !== "local" || !info.engine || !baseUrl) return [];
-  return [{ id: `${pool.id}~endpoint`, name: `${info.label} (${pool.name})`, engine: info.engine, baseUrl, declaredSlots: pool.endpoint?.slots ?? 1, credential: pool.endpoint?.credential }];
+  return [{ id: `backend~${b.id}`, name: b.name, engine: info.engine, baseUrl, declaredSlots: b.slots ?? 1, backendId: b.id }];
 };
 
-export const scopedPools = (companyId: string, pools: PoolConfig[]): PoolConfig[] =>
-  pools.map((p) => ({
+// A pool with a backend takes its API, prefix and address from it, and checks the backend itself (a local engine)
+// or the local-engine backends it watches (a proxy).
+export const resolvePool = (pool: PoolConfig, backends: Backend[]): PoolConfig => {
+  const b = pool.backend ? backends.find((x) => x.id === pool.backend) : undefined;
+  if (!b) return pool;
+  const watched = (pool.watch ?? []).map((id) => backends.find((x) => x.id === id)).filter((x): x is Backend => Boolean(x));
+  return {
+    ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { baseUrl: backendBaseUrl(b), backendId: b.id, slots: b.slots },
+    hosts: [...backendHost(b), ...watched.flatMap(backendHost)],
+  };
+};
+
+export const scopedPools = (companyId: string, pools: PoolConfig[], backends: Backend[] = []): PoolConfig[] =>
+  pools.map((raw) => resolvePool(raw, backends)).map((p) => ({
     ...p, id: poolKey(companyId, p.id), localId: p.id, companyId, scope: "instance",
-    hosts: [...p.hosts, ...endpointHost(p)].map((h) => ({ ...h, id: poolKey(companyId, h.id) })),
+    hosts: p.hosts.map((h) => ({ ...h, id: poolKey(companyId, h.id) })),
   }));
 
-export const loadScopedPools = async (store: Store, companyIds: string[]) =>
-  (await Promise.all(companyIds.map(async (id) => scopedPools(id, await store.companyPools(id).get())))).flat();
+export type BackendsFor = (companyId: string) => Promise<Backend[]>;
+
+export const loadScopedPools = async (store: Store, companyIds: string[], backendsFor: BackendsFor = async () => []) =>
+  (await Promise.all(companyIds.map(async (id) => scopedPools(id, await store.companyPools(id).get(), await backendsFor(id))))).flat();
 
 export const loadHeldPoolKeys = async (store: Store, companyIds: string[]) =>
   (await Promise.all(companyIds.map(async (id) => (await store.companyHeldPools(id).get()).map((p) => poolKey(id, p))))).flat();
