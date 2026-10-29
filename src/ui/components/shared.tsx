@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { StatusBadge } from "@paperclipai/plugin-sdk/ui";
+import { StatusBadge, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 
 import type { PoolSummary } from "../../api.js";
 
@@ -45,3 +45,12 @@ export const ErrorList = ({ errors }: { errors?: { field: string; message: strin
       {errors.map((e) => <li key={`${e.field}:${e.message}`}><code>{e.field}</code>: {e.message}</li>)}
     </ul>
   ) : null;
+
+// Pools are edited on the company settings page (manifest slot "capacity-settings", routePath "model-capacity").
+export const settingsPath = (companyPrefix: string | null) => (companyPrefix ? `/${companyPrefix}/company/settings/model-capacity` : undefined);
+
+export const EditPoolsLink = ({ companyPrefix, label = "Edit pools" }: { companyPrefix: string | null; label?: string }) => {
+  const nav = useHostNavigation();
+  const to = settingsPath(companyPrefix);
+  return to ? <a {...nav.linkProps(to)} style={{ color: "#3b82f6", fontSize: 13 }}>{label} →</a> : null;
+};

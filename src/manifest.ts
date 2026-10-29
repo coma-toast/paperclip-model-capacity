@@ -46,6 +46,7 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   instanceConfigSchema: {
     type: "object",
+    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. These two optional settings only control how held tasks are labelled and where alerts are posted.",
     additionalProperties: false,
     properties: {
       queueLabelId: { type: "string", title: "Queue label", description: "Existing label added to held tasks (optional)." },

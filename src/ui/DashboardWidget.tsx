@@ -1,7 +1,7 @@
 import { Spinner, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { PoolSummary } from "../api.js";
-import { HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
+import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
 
 interface Summary {
   pools: PoolSummary[];
@@ -20,7 +20,10 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
 
   return (
     <div style={{ display: "grid", gap: 6 }}>
-      <strong>Model capacity</strong>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <strong>Model capacity</strong>
+        <EditPoolsLink companyPrefix={context.companyPrefix} />
+      </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ textAlign: "left", opacity: 0.7 }}>
