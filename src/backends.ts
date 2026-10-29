@@ -50,7 +50,13 @@ export const backendsConfigSchema = {
         slots: { type: "number" },
         header: { type: "string" },
         scheme: { type: "string" },
-        key: { type: "string", format: "secret-ref" },
+        // A { type: "secret_ref", secretId, version } binding written by the backend form; the host binds it at
+        // backends.<n>.key. Not format "secret-ref": the host only converts those for top-level fields, not array items.
+        key: {
+          type: "object",
+          properties: { type: { const: "secret_ref" }, secretId: { type: "string" }, version: {} },
+          required: ["type", "secretId"],
+        },
       },
     },
   },
