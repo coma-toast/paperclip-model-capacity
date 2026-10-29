@@ -107,6 +107,18 @@ describe("invocation context (live-install bug, 2026-10-29)", () => {
     expect((await dir.list()).map((c) => c.id).sort()).toEqual(["c1", "c9"]);
   });
 
+  it("stops listing a refused company until the backoff passes", async () => {
+    const { harness, runtime } = await setup();
+    const { createCompanyDirectory, DENIED_COMPANY_BACKOFF_MS } = await import("../src/snapshot.js");
+    let now = 0;
+    await runtime.store.companies.set([{ id: "c1", name: "c1" }, { id: "c2", name: "c2" }]);
+    const dir = createCompanyDirectory(harness.ctx, runtime.store, () => now);
+    dir.markDenied(["c2"]);
+    expect((await dir.list()).map((c) => c.id)).toEqual(["c1"]);
+    now = DENIED_COMPANY_BACKOFF_MS + 1;
+    expect((await dir.list()).map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+
   it("a sweep with no known companies yet finishes cleanly with an empty snapshot", async () => {
     const harness = createTestHarness({ manifest });
     const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });

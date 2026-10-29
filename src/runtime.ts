@@ -53,6 +53,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     chain = chain.then(async () => {
       try {
         let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, now: now() });
+        companies.markDenied(snapshot.diagnostics?.skippedCompanies ?? []);
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };

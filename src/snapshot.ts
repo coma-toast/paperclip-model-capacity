@@ -83,8 +83,12 @@ const activeRunRows = (issues: Issue[]): RunRow[] =>
 // so companies are learned there and saved; timer work reads the saved list.
 export const COMPANY_REFRESH_MS = 5 * 60_000;
 
+// A company the host refused is not asked about again for this long, so the host log doesn't fill with denials.
+export const DENIED_COMPANY_BACKOFF_MS = 10 * 60_000;
+
 export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: () => number = Date.now) => {
   let refreshedAt = 0;
+  const deniedUntil = new Map<string, number>();
   const save = async (list: { id: string; name: string }[]) => {
     const current = await store.companies.get();
     // A placeholder name (the id) never replaces a real one.
@@ -105,7 +109,10 @@ export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: 
         ctx.logger.warn("companies.list failed inside an event; keeping the saved list", { error: e instanceof Error ? e.message : String(e) });
       }
     },
-    list: async () => (await store.companies.get()) as unknown as Company[],
+    list: async () => ((await store.companies.get()) as unknown as Company[]).filter((c) => (deniedUntil.get(c.id) ?? 0) <= clock()),
+    markDenied: (companyIds: string[]) => {
+      for (const id of companyIds) deniedUntil.set(id, clock() + DENIED_COMPANY_BACKOFF_MS);
+    },
   };
 };
 
