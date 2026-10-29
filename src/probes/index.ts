@@ -48,6 +48,8 @@ export interface ProbeAllDeps {
   fetch: FetchFn;
   // Resolves a host's auth header from its secret ref; never logged (A5).
   authHeader?: (host: HostConfig) => Promise<string | undefined>;
+  // Any auth headers for a host (server auth slots); never logged.
+  headers?: (host: HostConfig) => Promise<Record<string, string> | undefined>;
   timeoutMs?: number;
   now?: () => Date;
 }
@@ -59,7 +61,8 @@ export const probeAll = async (pools: PoolConfig[], prev: Record<string, HostSta
   const results = await Promise.all(
     [...hosts.values()].map(async (host) => {
       const authHeader = await deps.authHeader?.(host).catch(() => undefined);
-      return [host.id, await runProbe(host, { fetch: deps.fetch, authHeader, timeoutMs: deps.timeoutMs })] as const;
+      const headers = await deps.headers?.(host).catch(() => undefined);
+      return [host.id, await runProbe(host, { fetch: deps.fetch, authHeader, headers, timeoutMs: deps.timeoutMs })] as const;
     }),
   );
   const statuses: Record<string, HostStatus> = {};

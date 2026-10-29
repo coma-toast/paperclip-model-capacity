@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCompanySettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 
 import type { InspectHostResult } from "../api.js";
+import type { AuthSlotSummary } from "../auth.js";
 import type { EngineKind, HostConfig, PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
 
@@ -41,6 +42,7 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <Pill tone={server.up ? "ok" : "warn"}>{server.up ? "Answering" : "Not answering"}</Pill>
         <span>{server.summary}</span>
+        {report.usedAuth ? <Pill>with auth</Pill> : null}
         {server.error ? <span style={{ color: "#ef4444" }}>{server.error}</span> : null}
       </div>
       {server.slots?.length ? (
@@ -73,7 +75,7 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
   );
 };
 
-const HostRow = ({ host, poolId, companyId, error, onChange, onRemove }: { host: HostConfig; poolId: string; companyId: string; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
+const HostRow = ({ host, poolId, companyId, auth, error, onChange, onRemove }: { host: HostConfig; poolId: string; companyId: string; auth?: AuthSlotSummary; error: (f: string) => string | undefined; onChange: (p: Partial<HostConfig>) => void; onRemove: () => void }) => {
   const inspect = usePluginAction("inspect-host");
   const [report, setReport] = useState<InspectHostResult | null>(null);
   const [problem, setProblem] = useState<string>();
@@ -106,14 +108,19 @@ const HostRow = ({ host, poolId, companyId, error, onChange, onRemove }: { host:
         <div style={{ paddingTop: 20 }}><Button onClick={() => void check()} disabled={checking}>{checking ? "Checking…" : "Check server"}</Button></div>
         <div style={{ paddingTop: 20 }}><Button kind="danger" onClick={onRemove}>Remove</Button></div>
       </div>
+      <span style={MUTED}>
+        {auth
+          ? <>Auth: <code>{auth.header}: {auth.scheme ? `${auth.scheme} ` : ""}{auth.hasToken ? "••••" : "(no token yet)"}</code> from plugin config “{auth.slot.replace("serverAuth", "Server auth ")}”.</>
+          : <>No auth. If this backend needs a key, add it in the plugin's config under Server auth 1–4 with Server id <code>{host.id || "…"}</code>.</>}
+      </span>
       {problem ? <span style={{ color: "#ef4444", fontSize: 12 }}>{problem}</span> : null}
       {report ? <ServerReport report={report} /> : null}
     </div>
   );
 };
 
-const PoolCard = ({ pool, companyId, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; companyId: string; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+const PoolCard = ({ pool, companyId, auth, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; auth: AuthSlotSummary[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const hostErr = (k: number) => (f: string) => errorsFor(`pools[${index}].hosts[${k}].${f}`);
@@ -140,8 +147,8 @@ const PoolCard = ({ pool, companyId, index, errorsFor, onChange, onRemove }: {
         </Field>
       </div>
 
-      <Field label="Models in this pool" error={err("patterns")}
-        hint="One per line. A task counts here when its model matches a line. * matches anything, ? one character. Example: litellm/pc-omo-local-*">
+      <Field label="Agent models in this pool" error={err("patterns")}
+        hint="One per line, written the way agents name their model: usually a LiteLLM model name such as litellm/vm. A task counts here when its model matches a line (* matches anything, ? one character). This only matches names; it doesn't change LiteLLM.">
         <textarea style={{ ...inputStyle, minHeight: 64, fontFamily: "ui-monospace, monospace" }} value={pool.patterns.join("\n")}
           onChange={(e) => onChange({ patterns: e.target.value.split("\n") })} />
       </Field>
@@ -162,12 +169,12 @@ const PoolCard = ({ pool, companyId, index, errorsFor, onChange, onRemove }: {
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
-        <SectionTitle title="Model servers" hint="Optional. With servers listed, the pool also stops releasing work when they are down or busy with work from outside Paperclip. Check server shows what a server is running right now." />
-        {pool.hosts.length === 0 ? <span style={MUTED}>No servers: only the limit above applies.</span> : null}
+        <SectionTitle title="Backends behind these models (read-only)" hint="Optional. The servers LiteLLM sends these models to, for example the llama.cpp server on CT118. The plugin only reads their health and busy slots, so the pool stops releasing work while they are down or busy with work from outside Paperclip; Check server shows what one is running now. It never changes LiteLLM or the servers, so keep this list in step with LiteLLM's model config." />
+        {pool.hosts.length === 0 ? <span style={MUTED}>No backends listed: only the limit above applies (typical for cloud models).</span> : null}
         {pool.hosts.map((h, k) => (
-          <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
+          <HostRow key={k} host={h} poolId={pool.id} companyId={companyId} auth={auth.find((a) => a.server === h.id)} error={hostErr(k)} onChange={(p) => setHost(k, p)} onRemove={() => onChange({ hosts: pool.hosts.filter((_, j) => j !== k) })} />
         ))}
-        <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add server</Button></div>
+        <div><Button onClick={() => onChange({ hosts: [...pool.hosts, newHost(pool.hosts.length + 1)] })}>+ Add backend</Button></div>
       </div>
     </Card>
   );
@@ -176,7 +183,7 @@ const PoolCard = ({ pool, companyId, index, errorsFor, onChange, onRemove }: {
 // H4: edit pools and their servers. Per-company settings (queue label, alert task, secret refs) are on the host's plugin config form.
 export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   const companyId = context.companyId;
-  const config = usePluginData<{ pools: PoolConfig[] }>("pools-config", { companyId });
+  const config = usePluginData<{ pools: PoolConfig[]; auth: AuthSlotSummary[] }>("pools-config", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
@@ -226,7 +233,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       <div style={{ display: "grid", gap: 4 }}>
         <strong style={{ fontSize: 18 }}>Model capacity pools</strong>
         <span style={{ ...MUTED, fontSize: 13 }}>
-          These pools apply to this company only. A pool caps how many of this company's agent runs can use a group of models at once. Extra tasks wait in a queue and start in priority order when a slot frees.
+          These pools apply to this company only. Agents ask for a model by name (for LiteLLM agents, a LiteLLM model like litellm/vm); LiteLLM then sends the request to a backend server. A pool groups model names and caps how many of this company's agent runs can use them at once, and can watch the backends behind them. Extra tasks wait in a queue and start in priority order when a slot frees.
           New pools start in <strong>Observe</strong>: the plugin only logs what it would hold until you switch the pool to <strong>Enforce</strong>.
         </span>
       </div>
@@ -238,7 +245,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       ) : null}
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Add one to start.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} auth={config.data?.auth ?? []} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>

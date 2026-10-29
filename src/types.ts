@@ -16,8 +16,6 @@ export interface HostConfig {
   engine: EngineKind;
   baseUrl: string;
   declaredSlots: number;
-  // Path in company config holding the secret ref for the host's auth header (A5); never the value.
-  authSecretPath?: string;
 }
 
 export interface OverflowConfig {

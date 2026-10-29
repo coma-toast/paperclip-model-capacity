@@ -9,7 +9,7 @@ export interface FieldError {
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
 const POOL_FIELDS = ["id", "name", "patterns", "limit", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
-const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "authSecretPath"];
+const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
 const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio"];
 
@@ -39,7 +39,6 @@ const validateHost = (raw: unknown, at: string, errors: FieldError[]): HostConfi
   if (!ENGINES.includes(raw.engine as EngineKind)) errors.push({ field: `${at}.engine`, message: `Must be one of ${ENGINES.join(", ")}` });
   if (!isHttpUrl(raw.baseUrl)) errors.push({ field: `${at}.baseUrl`, message: "Must be an http(s) URL" });
   if (!isWhole(raw.declaredSlots ?? 1, 1)) errors.push({ field: `${at}.declaredSlots`, message: "Must be a whole number, 1 or more" });
-  if (raw.authSecretPath !== undefined && !isText(raw.authSecretPath)) errors.push({ field: `${at}.authSecretPath`, message: "Must be text" });
   return { ...(raw as unknown as HostConfig), declaredSlots: (raw.declaredSlots as number | undefined) ?? 1 };
 };
 
