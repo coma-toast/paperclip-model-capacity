@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
-import { backendBaseUrl, backendPrefix, probeBaseUrl, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
+import { backendBaseUrl, backendPrefix, backendsConfigSchema, probeBaseUrl, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
 import manifest from "../src/manifest.js";
 
 const KEY = { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" };
@@ -38,5 +38,12 @@ describe("backends", () => {
     expect(b["x-api-key"].startsWith("Bearer")).toBe(false);
     expect(await auth.headersFor("c1", "c")).toBeUndefined();
     expect(await auth.headersFor("c1", undefined)).toBeUndefined();
+  });
+
+  it("gives the host's config form a type select and its secret picker for the key", () => {
+    const item = backendsConfigSchema.backends.items.properties;
+    expect(item.type.enum).toContain("litellm");
+    expect(item.key).toMatchObject({ format: "secret-ref" });
+    expect("type" in item.key).toBe(false);
   });
 });

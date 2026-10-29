@@ -1,6 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
-import { apiInfo, type ApiKind } from "./apis.js";
+import { APIS, apiInfo, type ApiKind } from "./apis.js";
 
 // A backend is one model endpoint (a proxy, a cloud API or a local engine), defined once per company in the plugin's
 // company config. Pools pick a backend; a proxy pool can also watch local-engine backends. The key is a company secret
@@ -35,30 +35,38 @@ export const readBackends = (config: Record<string, unknown>): Backend[] =>
 export const summarizeBackends = (config: Record<string, unknown>): BackendSummary[] =>
   readBackends(config).map(({ key, ...rest }) => ({ ...rest, hasKey: Boolean(key) }));
 
+// Rendered by the host's plugin config form too, so every field gets a title, a description and (where one exists)
+// a default; the Model capacity page's Add/Edit backend form is the main editor.
 export const backendsConfigSchema = {
   backends: {
     type: "array",
     title: "Backends",
-    description: "Model endpoints for this company. Add and edit them on Company settings → Model capacity.",
+    description: "Model endpoints for this company. Easiest to add and edit on Company settings → Model capacity, which tests the connection and stores the key for you.",
     items: {
       type: "object",
       additionalProperties: false,
+      required: ["id", "name", "type"],
       properties: {
-        id: { type: "string" },
-        name: { type: "string" },
-        type: { type: "string" },
-        baseUrl: { type: "string" },
-        prefix: { type: "string" },
-        slots: { type: "number" },
-        header: { type: "string" },
-        scheme: { type: "string" },
-        // A { type: "secret_ref", secretId, version } binding written by the backend form; the host binds it at
-        // backends.<n>.key. Not format "secret-ref": the host only converts those for top-level fields, not array items.
-        key: {
-          type: "object",
-          properties: { type: { const: "secret_ref" }, secretId: { type: "string" }, version: {} },
-          required: ["type", "secretId"],
+        name: { type: "string", title: "Name", description: "Shown on pools, e.g. Home proxy or Laptop Ollama." },
+        type: {
+          type: "string",
+          title: "Type",
+          enum: APIS.map((a) => a.kind),
+          description: APIS.map((a) => `${a.kind}: ${a.label}`).join(" · "),
         },
+        baseUrl: { type: "string", title: "Address", description: "Where the plugin reads the model list and health. Cloud types have a built-in default." },
+        key: {
+          // A { type: "secret_ref", secretId, version } binding. No `type` here: the host form keys its secret picker
+          // off the format, and array items aren't converted to strings before validation.
+          format: "secret-ref",
+          title: "API key",
+          description: "A company secret. Leave empty for engines that don't need a key.",
+        },
+        prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
+        slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
+        id: { type: "string", title: "Id", description: "Short and unique; pools refer to the backend by it.", "x-paperclip-advanced": true },
+        header: { type: "string", title: "Auth header", default: "Authorization", description: "Header the key goes in.", "x-paperclip-advanced": true },
+        scheme: { type: "string", title: "Auth scheme", default: "Bearer", description: "Put before the key; empty for none.", "x-paperclip-advanced": true },
       },
     },
   },
