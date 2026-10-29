@@ -63,6 +63,11 @@ describe("inspectHost", () => {
     expect((await inspect("openai", openAiRoutes())).models).toEqual([{ name: "gpu" }]);
   });
 
+  it("says a refused request needs a key, not that the server is down", async () => {
+    const r = await inspect("openai", { "/v1/models": { status: 401, body: { error: "API key required" } } });
+    expect(r).toMatchObject({ up: false, summary: "Refused the request (/v1/models returned 401): check the API key" });
+  });
+
   it("reports a server that isn't answering instead of throwing", async () => {
     const f = await startFake({});
     await f.close();

@@ -101,6 +101,9 @@ export const inspectHost = async (engine: EngineKind, pc: ProbeContext): Promise
   try {
     return { up: true, engine, ...(await INSPECTORS[engine](pc)) };
   } catch (e) {
-    return { up: false, engine, error: e instanceof Error ? e.message : String(e), summary: "Not answering", models: [] };
+    const error = e instanceof Error ? e.message : String(e);
+    // A 401/403 means the server is up but wants a (different) key, which is the likely fix.
+    const summary = /returned 40[13]\b/.test(error) ? `Refused the request (${error}): check the API key` : "Not answering";
+    return { up: false, engine, error, summary, models: [] };
   }
 };

@@ -27,6 +27,8 @@ const newPool = (n: number, backend?: BackendSummary): PoolConfig => ({
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "backend";
 
+const upLabel = (s: Pick<InspectResult, "up" | "error">) => (s.up ? "Answering" : /returned 40[13]\b/.test(s.error ?? "") ? "Needs a key" : "Not answering");
+
 const since = (iso?: string) => {
   if (!iso) return "";
   const m = Math.round((Date.now() - Date.parse(iso)) / 60_000);
@@ -39,7 +41,7 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
   return (
     <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 12, display: "grid", gap: 10, fontSize: 13 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <Pill tone={server.up ? "ok" : "warn"}>{server.up ? "Answering" : "Not answering"}</Pill>
+        <Pill tone={server.up ? "ok" : "warn"}>{upLabel(server)}</Pill>
         <span>{server.summary}</span>
         {report.usedAuth ? <Pill>with auth</Pill> : null}
         {server.error ? <span style={{ color: "#ef4444" }}>{server.error}</span> : null}
@@ -238,7 +240,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
             {result.models ? (result.models.ok
               ? <span><Pill tone="ok">Models</Pill> {result.models.models.length} found{result.models.models.length ? `: ${result.models.models.slice(0, 6).join(", ")}${result.models.models.length > 6 ? "…" : ""}` : ""}</span>
               : <span style={{ color: "#ef4444" }}>{result.models.error}</span>) : null}
-            {result.server ? <span><Pill tone={result.server.up ? "ok" : "warn"}>{result.server.up ? "Answering" : "Not answering"}</Pill> {result.server.summary}</span> : null}
+            {result.server ? <span><Pill tone={result.server.up ? "ok" : "warn"}>{upLabel(result.server)}</Pill> {result.server.summary}</span> : null}
           </div>
         ) : null}
         {problem ? <span style={{ color: "#ef4444", fontSize: 13 }}>{problem}</span> : null}
