@@ -165,6 +165,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     runs.push({
       runId: row.id, issueId: row.issue_id ?? "", agentId: row.agent_id, companyId: row.company_id,
       poolId: poolOf(model)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at),
+      agentName: agent.name, issueIdentifier: issue?.identifier ?? undefined,
     });
   }
 
