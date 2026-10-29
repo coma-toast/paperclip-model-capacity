@@ -7,7 +7,7 @@ import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { createExecutor } from "./executor.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
-import { buildSnapshot, createAgentCache, createCompanyLister, dbRunReader, type RunReader } from "./snapshot.js";
+import { buildSnapshot, createAgentCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
 import type { AlertEvent, Snapshot } from "./types.js";
 
@@ -30,7 +30,7 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => {
   const now = opts.now ?? (() => new Date());
   const store = createStore(ctx.state);
-  const listCompanies = createCompanyLister(ctx, store);
+  const companies = createCompanyDirectory(ctx, store);
   const agents = createAgentCache(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
   const configId = async (companyId: string, key: string) => {
@@ -52,7 +52,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const cycle = (reason: string) => {
     chain = chain.then(async () => {
       try {
-        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies, now: now() });
+        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, now: now() });
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };
@@ -104,11 +104,18 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       ctx.logger.info("Model capacity pruned history", { days: removed });
     });
     for (const type of ["agent.run.started", "agent.run.finished", "agent.run.failed", "agent.run.cancelled"] as const) {
-      ctx.events.on(type, async () => schedule(type));
+      ctx.events.on(type, async (event) => {
+        await companies.noteFromEvent(event.companyId);
+        schedule(type);
+      });
     }
-    ctx.events.on("issue.updated", async () => schedule("issue.updated"));
+    ctx.events.on("issue.updated", async (event) => {
+      await companies.noteFromEvent(event.companyId);
+      schedule("issue.updated");
+    });
     ctx.events.on("agent.updated", async (event) => {
       agents.invalidate(event.companyId);
+      await companies.noteFromEvent(event.companyId);
       schedule("agent.updated");
     });
     const interval = opts.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;

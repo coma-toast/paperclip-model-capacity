@@ -34,6 +34,7 @@ const setup = async () => {
     return rt;
   };
   const runtime = make();
+  await runtime.store.companies.set([{ id: "c1", name: "c1" }]);
   await runtime.store.pools.set([pool("gpu", { patterns: ["gateway/gpu"] })]);
   return { harness, runtime, make, setRuns: (r: RunRow[]) => { runs = r; } };
 };
@@ -83,24 +84,35 @@ describe("invocation context (live-install bug, 2026-10-29)", () => {
     expect(seen).toEqual([undefined]);
   });
 
-  it("keeps the last company list when companies.list is refused", async () => {
-    const { harness } = await setup();
-    const { createCompanyLister } = await import("../src/snapshot.js");
-    const list = createCompanyLister(harness.ctx);
-    expect((await list()).map((c) => c.id)).toEqual(["c1"]);
+  it("learns companies from events and lists them for timer work without calling companies.list", async () => {
+    const { harness, runtime } = await setup();
+    const { createCompanyDirectory } = await import("../src/snapshot.js");
+    let now = 0;
+    await runtime.store.companies.set([]);
+    const dir = createCompanyDirectory(harness.ctx, runtime.store, () => now);
+    expect(await dir.list()).toEqual([]);
+    await dir.noteFromEvent("c1");
+    expect((await dir.list()).map((c) => [c.id, c.name])).toEqual([["c1", "c1"]]);
+    const calls: string[] = [];
     const original = harness.ctx.companies.list;
+    harness.ctx.companies.list = async (input) => { calls.push("list"); return original(input); };
+    now = 6 * 60_000;
+    await dir.noteFromEvent("c1");
+    await dir.list();
+    await dir.list();
+    expect(calls).toEqual(["list"]);
     harness.ctx.companies.list = async () => { throw new Error("invocation scope"); };
-    expect((await list()).map((c) => c.id)).toEqual(["c1"]);
-    harness.ctx.companies.list = original;
-    await expect(createCompanyLister({ ...harness.ctx, companies: { ...harness.ctx.companies, list: async () => { throw new Error("x"); } } })()).rejects.toThrow("x");
+    now = 12 * 60_000;
+    await dir.noteFromEvent("c9");
+    expect((await dir.list()).map((c) => c.id).sort()).toEqual(["c1", "c9"]);
   });
 
-  it("a restarted worker falls back to the company list saved in state", async () => {
-    const { harness, runtime } = await setup();
-    const { createCompanyLister } = await import("../src/snapshot.js");
-    await createCompanyLister(harness.ctx, runtime.store)();
-    const refused = { ...harness.ctx, companies: { ...harness.ctx.companies, list: async () => { throw new Error("invocation scope"); } } };
-    expect((await createCompanyLister(refused, runtime.store)()).map((c) => c.id)).toEqual(["c1"]);
+  it("a sweep with no known companies yet finishes cleanly with an empty snapshot", async () => {
+    const harness = createTestHarness({ manifest });
+    const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
+    runtimes.push(rt);
+    await rt.cycle("sweep");
+    expect(rt.health().lastError).toBeUndefined();
   });
 });
 
