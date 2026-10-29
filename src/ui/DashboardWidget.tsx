@@ -3,7 +3,7 @@ import { Spinner, usePluginData, type PluginWidgetProps } from "@paperclipai/plu
 import { apiInfo } from "../apis.js";
 import type { BackendUsageRow, PoolSummary } from "../api.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
-import { BackendUsageTable } from "./components/usage.js";
+import { BackendUsageTable, SubscriptionUsage } from "./components/usage.js";
 
 interface Summary {
   pools: PoolSummary[];
@@ -47,6 +47,7 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
         </tbody>
       </table>
       <BackendUsageTable rows={data.backends ?? []} companyId={context.companyId} onRefreshed={refresh} />
+      <SubscriptionUsage companyId={context.companyId} />
     </div>
   );
 };
