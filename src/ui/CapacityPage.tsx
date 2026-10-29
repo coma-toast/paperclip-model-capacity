@@ -5,7 +5,7 @@ import type { PoolSummary, QueueRow } from "../api.js";
 import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
 import { Button, inputStyle } from "./components/form.js";
-import { HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
+import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
 
@@ -45,12 +45,16 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
   const pools = summary.data?.pools ?? [];
   return (
     <div style={{ display: "grid", gap: 16, padding: 16 }}>
-      <h2 style={{ margin: 0 }}>Model capacity</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <h2 style={{ margin: 0 }}>Model capacity</h2>
+        <EditPoolsLink companyPrefix={context.companyPrefix} label="Edit this company's pools" />
+      </div>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <MetricCard label="Runs in use" value={pools.reduce((n, p) => n + p.inUse, 0)} />
         <MetricCard label="Waiting" value={pools.reduce((n, p) => n + p.queued, 0)} />
         <MetricCard label="Open alerts" value={alerts.data?.active.length ?? 0} />
       </div>
+      {summary.data && pools.length === 0 ? <div>No pools for this company yet. <EditPoolsLink companyPrefix={context.companyPrefix} label="Set up pools" /></div> : null}
 
       <section>
         <h3>Pools</h3>
