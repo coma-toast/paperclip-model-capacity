@@ -467,10 +467,24 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
 };
 
 // P2.6: keep each task (and its subtasks) on one engine so its prompt cache is reused.
-const StickySection = ({ pool, engines, error, onChange, defaultEngine }: {
+// Where a model really goes per the proxy, and whether that matches the engine it's tied to.
+const RouteNote = ({ route, tied, engines }: { route?: { engines: string[]; elsewhere: number }; tied?: string; engines: BackendSummary[] }) => {
+  if (!route) return null;
+  const names = route.engines.map((id) => engines.find((b) => b.id === id)?.name ?? id);
+  const label = route.engines.length + route.elsewhere > 1
+    ? `→ ${[...names, ...(route.elsewhere ? [`${route.elsewhere} other`] : [])].join(" + ")} (balanced; can't be pinned)`
+    : names.length ? `→ ${names[0]}` : "→ a server that isn't an engine backend";
+  const mismatch = tied && !(route.engines.length === 1 && !route.elsewhere && route.engines[0] === tied);
+  return <span style={mismatch ? { color: "#ef4444", fontSize: 12 } : MUTED}>{label}{mismatch ? ", not the engine it's tied to" : ""}</span>;
+};
+
+const StickySection = ({ pool, engines, error, onChange, defaultEngine, route }: {
   pool: PoolConfig; engines: BackendSummary[]; error?: string; onChange: (p: Partial<PoolConfig>) => void;
-  // Direct-to-engine pools: each model comes from one engine, so turning pinning on ties it there.
+  // The engine each model comes from or routes to (direct pools by prefix, proxies by their routing): turning pinning on
+  // ties models there, and the rows can be filled from it.
   defaultEngine?: (model: string) => string | undefined;
+  // Where the proxy sends each model, to show and to flag a tie that disagrees with it.
+  route?: (model: string) => { engines: string[]; elsewhere: number } | undefined;
 }) => {
   const sticky = pool.sticky;
   const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
@@ -510,6 +524,9 @@ const StickySection = ({ pool, engines, error, onChange, defaultEngine }: {
                         {engines.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                       </select>
                     </td>
+                    <td style={{ padding: "3px 8px 3px 0", whiteSpace: "nowrap" }}>
+                      <RouteNote route={route?.(model)} tied={index >= 0 ? sticky[index].engine : undefined} engines={engines} />
+                    </td>
                     <td style={{ padding: "3px 0", whiteSpace: "nowrap" }}>
                       {index >= 0 ? <span style={MUTED}>try #{index + 1} </span> : null}
                       {index > 0 ? <button type="button" onClick={() => moveUp(model)} style={{ color: "#3b82f6", cursor: "pointer" }} title="Try this engine earlier">↑</button> : null}
@@ -519,6 +536,15 @@ const StickySection = ({ pool, engines, error, onChange, defaultEngine }: {
               })}
             </tbody>
           </table>
+          {defaultEngine && models.some((m) => defaultEngine(m)) ? (
+            <button type="button" style={{ color: "#3b82f6", cursor: "pointer", fontSize: 12, justifySelf: "start" }}
+              onClick={() => onChange({ sticky: [
+                ...sticky.filter((t) => defaultEngine(t.model) === t.engine),
+                ...models.filter((m) => defaultEngine(m) && !sticky.some((t) => t.model === m && defaultEngine(m) === t.engine)).map((m) => ({ model: m, engine: defaultEngine(m)! })),
+              ] })}>
+              {route ? "Tie from proxy routing" : "Tie each model to its engine"}
+            </button>
+          ) : null}
           <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
             Move a task only after its engine has been down
             <input style={{ ...inputStyle, width: 70, padding: "4px 6px" }} type="number" min={1} value={pool.reassignAfterMinutes ?? 30}
@@ -616,6 +642,33 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
   const engines = [...(backend && apiInfo(backend.type).group === "local" ? [backend] : []), ...locals.filter((b) => pool.watch?.includes(b.id))];
   const engineSlots = engines.reduce((n, b) => n + (b.slots ?? 1), 0);
   // Switching backend keeps the names picked and moves them under the new backend's prefix.
+  // Where the proxy really sends each model (LiteLLM's routing), matched to the engine backends.
+  const loadRoutes = usePluginAction("proxy-routes");
+  const [routes, setRoutes] = useState<Map<string, { engines: string[]; elsewhere: number }> | null>(null);
+  useEffect(() => {
+    setRoutes(null);
+    if (!backend || backend.type !== "litellm") return;
+    let live = true;
+    (loadRoutes({ companyId, backendId: backend.id }) as Promise<{ ok: boolean; routes?: { model: string; targets: { engine?: string }[] }[] }>)
+      .then((r) => {
+        if (!live || !r.ok || !r.routes) return;
+        setRoutes(new Map(r.routes.map((x) => [x.model, {
+          engines: [...new Set(x.targets.flatMap((t) => (t.engine ? [t.engine] : [])))],
+          elsewhere: x.targets.filter((t) => !t.engine).length,
+        }])));
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [backend?.id, backend?.type, companyId]);
+  const poolModels = pool.patterns.map((m) => m.trim()).filter(Boolean);
+  const routedTo = (engineId: string) => poolModels.filter((m) => routes?.get(m)?.engines.includes(engineId));
+  const shouldWatch = routes ? locals.filter((b) => routedTo(b.id).length).map((b) => b.id) : [];
+  const watchMatches = !routes || (shouldWatch.length === (pool.watch ?? []).length && shouldWatch.every((id) => pool.watch?.includes(id)));
+  const singleEngine = (m: string) => {
+    const r = routes?.get(m);
+    return r && r.engines.length === 1 && !r.elsewhere ? r.engines[0] : undefined;
+  };
+
   const switchBackend = (id: string) => {
     const next = backends.find((b) => b.id === id);
     const nextPrefix = next ? backendPrefix(next) : "";
@@ -671,20 +724,35 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
         <div style={{ display: "grid", gap: 4 }}>
           <SectionTitle title="Also watch these servers" hint={`Local engines ${backend.name} sends these models to. While they're down or busy with work from outside Paperclip, the pool releases nothing new.`} />
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-            {locals.map((b) => (
-              <label key={b.id} style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
-                <input type="checkbox" checked={pool.watch?.includes(b.id) ?? false}
-                  onChange={(e) => onChange({ watch: e.target.checked ? [...(pool.watch ?? []), b.id] : (pool.watch ?? []).filter((x) => x !== b.id) })} />
-                {b.name}
-              </label>
-            ))}
+            {locals.map((b) => {
+              const watched = pool.watch?.includes(b.id) ?? false;
+              const via = routedTo(b.id);
+              return (
+                <label key={b.id} style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+                  <input type="checkbox" checked={watched}
+                    onChange={(e) => onChange({ watch: e.target.checked ? [...(pool.watch ?? []), b.id] : (pool.watch ?? []).filter((x) => x !== b.id) })} />
+                  {b.name}
+                  {routes ? (via.length
+                    ? <span style={MUTED}>← {via.join(", ")}</span>
+                    : watched ? <span style={{ color: "#f59e0b", fontSize: 12 }}>none of this pool's models go here</span> : null) : null}
+                </label>
+              );
+            })}
           </div>
+          {routes && !watchMatches ? (
+            <span style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={MUTED}>Per {backend.name}'s routing, this pool's models go to {shouldWatch.length ? shouldWatch.map((id) => locals.find((b) => b.id === id)?.name).join(", ") : "none of these engines"}.</span>
+              <button type="button" onClick={() => onChange({ watch: shouldWatch.length ? shouldWatch : undefined })} style={{ color: "#3b82f6", cursor: "pointer" }}>Watch exactly these</button>
+            </span>
+          ) : null}
+          {routes === null && backend.type === "litellm" ? <span style={MUTED}>Checking {backend.name}'s routing…</span> : null}
         </div>
       ) : null}
 
       {backend && frontsEngines(backend.type) && locals.length && pool.patterns.filter((m) => m.trim()).length ? (
         <StickySection pool={pool} engines={locals} error={err("sticky") ?? err("reassignAfterMinutes")} onChange={onChange}
-          defaultEngine={backend.type === "direct" ? (m) => locals.find((b) => backendPrefix(b) && m.startsWith(backendPrefix(b)))?.id : undefined} />
+          defaultEngine={backend.type === "direct" ? (m) => locals.find((b) => backendPrefix(b) && m.startsWith(backendPrefix(b)))?.id : routes ? singleEngine : undefined}
+          route={routes ? (m) => routes.get(m) : undefined} />
       ) : null}
       {pool.patterns.some((m) => m.trim()) ? (
         <AgentsSection pool={pool} saved={saved} agents={agents} error={err("agentModel")} onChange={onChange} onAgentsChanged={onAgentsChanged} />
