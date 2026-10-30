@@ -15,7 +15,7 @@ import { connectionKeyBinding, createCompanySecret, listAiConnections, readPlugi
 type FieldError = { field: string; message: string };
 type Result = { ok: boolean; error?: string; errors?: FieldError[] };
 
-const PLACED = /^pools\[\d+\]\.(name|id|backend|watch|limit|alertAfterMinutes|patterns|mode|privacy)$/;
+const PLACED = /^pools\[\d+\]\.(name|id|backend|watch|sticky|reassignAfterMinutes|limit|alertAfterMinutes|patterns|mode|privacy)$/;
 
 const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
 
@@ -465,6 +465,67 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
   );
 };
 
+// P2.6: keep each task (and its subtasks) on one engine so its prompt cache is reused.
+const StickySection = ({ pool, engines, error, onChange }: {
+  pool: PoolConfig; engines: BackendSummary[]; error?: string; onChange: (p: Partial<PoolConfig>) => void;
+}) => {
+  const sticky = pool.sticky;
+  const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
+  const setEngine = (model: string, engine: string) => {
+    const rest = (sticky ?? []).filter((t) => t.model !== model);
+    onChange({ sticky: engine ? [...rest, { model, engine }] : rest });
+  };
+  const moveUp = (model: string) => {
+    const list = [...(sticky ?? [])];
+    const i = list.findIndex((t) => t.model === model);
+    if (i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
+    onChange({ sticky: list });
+  };
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <SectionTitle title="Keep each task on one engine" hint="For the prompt cache: a task and its subtasks run on the same engine every time instead of starting a new session elsewhere." />
+      <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+        <input type="checkbox" checked={sticky !== undefined} onChange={(e) => onChange({ sticky: e.target.checked ? [] : undefined, reassignAfterMinutes: undefined })} />
+        Pin tasks to an engine
+      </label>
+      {sticky !== undefined ? (
+        <>
+          <span style={MUTED}>Tie each model that reaches exactly one engine to it. A task on a model left as "Any engine" is placed on the first engine with room (top first) and stays there.</span>
+          <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+            <tbody>
+              {models.map((model) => {
+                const index = sticky.findIndex((t) => t.model === model);
+                return (
+                  <tr key={model}>
+                    <td style={{ padding: "3px 8px 3px 0", fontFamily: "ui-monospace, monospace" }}>{model}</td>
+                    <td style={{ padding: "3px 8px 3px 0" }}>
+                      <select style={{ ...inputStyle, padding: "4px 6px" }} value={index >= 0 ? sticky[index].engine : ""} onChange={(e) => setEngine(model, e.target.value)}>
+                        <option value="">Any engine (placed by the plugin)</option>
+                        {engines.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ padding: "3px 0", whiteSpace: "nowrap" }}>
+                      {index >= 0 ? <span style={MUTED}>try #{index + 1} </span> : null}
+                      {index > 0 ? <button type="button" onClick={() => moveUp(model)} style={{ color: "#3b82f6", cursor: "pointer" }} title="Try this engine earlier">↑</button> : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+            Move a task only after its engine has been down
+            <input style={{ ...inputStyle, width: 70, padding: "4px 6px" }} type="number" min={1} value={pool.reassignAfterMinutes ?? 30}
+              onChange={(e) => onChange({ reassignAfterMinutes: Number(e.target.value) })} />
+            minutes
+          </label>
+        </>
+      ) : null}
+      {error ? <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span> : null}
+    </div>
+  );
+};
+
 const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFor, onChange, onRemove }: {
   pool: PoolConfig; companyId: string; backends: BackendSummary[]; uses: AgentModelUse[]; otherPools: PoolConfig[]; index: number;
   errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
@@ -481,7 +542,7 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
   const switchBackend = (id: string) => {
     const next = backends.find((b) => b.id === id);
     const nextPrefix = next ? backendPrefix(next) : "";
-    onChange({ backend: id || undefined, watch: undefined, api: undefined, prefix: undefined, endpoint: undefined, hosts: [],
+    onChange({ backend: id || undefined, watch: undefined, sticky: undefined, api: undefined, prefix: undefined, endpoint: undefined, hosts: [],
       patterns: pool.patterns.map((p) => (p.trim() ? addPrefix(nextPrefix, stripPrefix(prefix, p)) : p)) });
   };
   return (
@@ -542,6 +603,10 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
             ))}
           </div>
         </div>
+      ) : null}
+
+      {backend && info!.group === "gateway" && locals.length && pool.patterns.filter((m) => m.trim()).length ? (
+        <StickySection pool={pool} engines={locals} error={err("sticky") ?? err("reassignAfterMinutes")} onChange={onChange} />
       ) : null}
 
       <div style={{ display: "grid", gap: 6 }}>

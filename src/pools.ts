@@ -26,9 +26,17 @@ export const resolvePool = (pool: PoolConfig, backends: Backend[]): PoolConfig =
   const b = pool.backend ? backends.find((x) => x.id === pool.backend) : undefined;
   if (!b) return pool;
   const watched = (pool.watch ?? []).map((id) => backends.find((x) => x.id === id)).filter((x): x is Backend => Boolean(x));
-  const hosts = [...backendHost(b), ...watched.flatMap(backendHost)];
+  // A sticky pool also watches every engine it places tasks on.
+  const targets = (pool.sticky ?? []).flatMap((t) => {
+    const engine = backends.find((x) => x.id === t.engine);
+    const host = engine ? backendHost(engine)[0] : undefined;
+    return engine && host ? [{ model: t.model, engine, host }] : [];
+  });
+  const engines = [b, ...watched, ...targets.map((t) => t.engine)].filter((x, i, all) => all.findIndex((y) => y.id === x.id) === i);
+  const hosts = engines.flatMap(backendHost);
   return {
     ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { baseUrl: backendBaseUrl(b), backendId: b.id, slots: b.slots }, hosts,
+    ...(targets.length ? { placement: targets.map((t) => ({ model: t.model, hostId: t.host.id })) } : {}),
     // Changing a backend's slots changes the limit of every pool that matches its engines.
     ...(pool.limitFromEngines && hosts.length ? { limit: hosts.reduce((n, h) => n + h.declaredSlots, 0) } : {}),
   };
@@ -38,6 +46,7 @@ export const scopedPools = (companyId: string, pools: PoolConfig[], backends: Ba
   pools.map((raw) => resolvePool(raw, backends)).map((p) => ({
     ...p, id: poolKey(companyId, p.id), localId: p.id, companyId, scope: "instance",
     hosts: p.hosts.map((h) => ({ ...h, id: poolKey(companyId, h.id) })),
+    ...(p.placement ? { placement: p.placement.map((t) => ({ ...t, hostId: poolKey(companyId, t.hostId) })) } : {}),
   }));
 
 export type BackendsFor = (companyId: string) => Promise<Backend[]>;
@@ -47,7 +56,7 @@ export type BackendsFor = (companyId: string) => Promise<Backend[]>;
 export const loadScopedPools = async (store: Store, companyIds: string[], backendsFor: BackendsFor = async () => []) =>
   (await Promise.all(companyIds.map(async (id) => {
     const pools = await store.companyPools(id).get();
-    const needsBackends = pools.some((p) => p.backend || p.watch?.length);
+    const needsBackends = pools.some((p) => p.backend || p.watch?.length || p.sticky?.length);
     return scopedPools(id, pools, needsBackends ? await backendsFor(id) : []);
   }))).flat();
 

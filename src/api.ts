@@ -292,6 +292,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const missing = result.pools.flatMap((p, i) => [
       ...(p.backend && !backendIds.has(p.backend) ? [{ field: `pools[${i}].backend`, message: "That backend no longer exists" }] : []),
       ...(p.watch ?? []).filter((id) => !backendIds.has(id)).map(() => ({ field: `pools[${i}].watch`, message: "A watched backend no longer exists" })),
+      ...(p.sticky ?? []).filter((t) => !backendIds.has(t.engine)).map(() => ({ field: `pools[${i}].sticky`, message: "An engine this pool places tasks on no longer exists" })),
     ]);
     if (missing.length) return { ok: false, errors: missing };
     await store.companyPools(companyId).set(result.pools);

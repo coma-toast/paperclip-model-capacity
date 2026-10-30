@@ -9,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
@@ -92,6 +92,18 @@ export const validatePools = (input: unknown): ValidationResult => {
     else if ((raw.patterns as string[]).some((p) => /[*?]/.test(p))) errors.push({ field: `${at}.patterns`, message: "Pick models from the list; wildcards aren't used" });
     if (raw.backend !== undefined && !isText(raw.backend)) errors.push({ field: `${at}.backend`, message: "Pick a backend" });
     if (raw.watch !== undefined && !(Array.isArray(raw.watch) && raw.watch.every(isText))) errors.push({ field: `${at}.watch`, message: "Must be a list of backends" });
+    if (raw.sticky !== undefined) {
+      const sticky = raw.sticky;
+      const patterns = isTextList(raw.patterns) ? (raw.patterns as string[]) : [];
+      if (!Array.isArray(sticky) || !sticky.every((t) => isObject(t) && isText(t.model) && isText(t.engine))) {
+        errors.push({ field: `${at}.sticky`, message: "Each engine entry needs a model and an engine" });
+      } else if (new Set(sticky.map((t) => t.model)).size !== sticky.length) {
+        errors.push({ field: `${at}.sticky`, message: "Each model can reach only one engine" });
+      } else if (sticky.some((t) => !patterns.includes(t.model as string))) {
+        errors.push({ field: `${at}.sticky`, message: "Every model tied to an engine must be one of the pool's models" });
+      }
+    }
+    if (raw.reassignAfterMinutes !== undefined && !isWhole(raw.reassignAfterMinutes, 1)) errors.push({ field: `${at}.reassignAfterMinutes`, message: "Must be a whole number of minutes, 1 or more" });
     // With a backend, the API, prefix and address come from it (checked against the company's backends on save).
     if (isText(raw.backend)) {
       pools.push({ ...(raw as unknown as PoolConfig), mode: (raw.mode as PoolConfig["mode"]) ?? "observe", scope: "instance", hosts: [], alertAfterMinutes: (raw.alertAfterMinutes as number | undefined) ?? DEFAULT_ALERT_AFTER_MINUTES });

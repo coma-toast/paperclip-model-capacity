@@ -78,6 +78,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
         companies.markDenied(snapshot.diagnostics?.skippedCompanies ?? []);
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
+        await executor.clearPlacements(snapshot);
         snapshot = { ...snapshot, holds: Object.values(await store.holds.get()), released: Object.values(await store.released.get()) };
         lastSnapshot = snapshot;
         const actions = decide(snapshot, now());
