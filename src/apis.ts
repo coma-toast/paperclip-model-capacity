@@ -2,11 +2,12 @@ import type { EngineKind } from "./types.js";
 
 // A pool belongs to one model API, the logical boundary between pools. Agents name a model by the API it goes
 // through, usually with a prefix (e.g. "openrouter/…", "ollama/…"), so each pool keeps that API's prefix.
-export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "other";
+export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "direct" | "other";
 
 // gateway: routes to backends the pool can watch. cloud: nothing to watch. local: the endpoint is itself the model
 // server, checked directly. names: only model names, no endpoint.
-export type ApiGroup = "gateway" | "cloud" | "local" | "names";
+// "virtual": no endpoint of its own; a pool on it reaches its engines directly.
+export type ApiGroup = "gateway" | "virtual" | "cloud" | "local" | "names";
 
 export interface ApiInfo {
   kind: ApiKind;
@@ -34,6 +35,7 @@ export const APIS: readonly ApiInfo[] = [
   { kind: "omlx", label: "oMLX", group: "local", defaultPrefix: "omlx/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "openai", hint: "A local oMLX server (OpenAI-compatible), checked directly." },
   { kind: "vllm", label: "vLLM", group: "local", defaultPrefix: "vllm/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "vllm", hint: "A local vLLM server, checked directly." },
   { kind: "llamacpp", label: "llama.cpp server", group: "local", defaultPrefix: "llamacpp/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8080", listing: "openai", engine: "llamacpp", hint: "A local llama.cpp server, checked directly (slots included)." },
+  { kind: "direct", label: "Direct to engines (no proxy)", group: "virtual", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "none", hint: "For setups without a proxy: a pool on it reaches the local engines directly. Its models are the engines' models, each with that engine's prefix." },
   { kind: "other", label: "Other (names only)", group: "names", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "none", hint: "Model names written in full, with no endpoint to ask or check." },
 ];
 
@@ -67,3 +69,8 @@ export const backendFromConnection = (c: AiConnectionLike): { type: ApiKind; bas
   if (c.provider === "openai") return { type: "openai", baseUrl: "https://api.openai.com/v1" };
   return { reason: "not an OpenAI-compatible API" };
 };
+
+// Backends that front other engines: a pool on one can watch engines and pin tasks to them.
+export const frontsEngines = (kind: ApiKind | undefined) => ["gateway", "virtual"].includes(apiInfo(kind).group);
+// Backends with an endpoint of their own (address, key, connection test).
+export const hasEndpoint = (kind: ApiKind | undefined) => !["names", "virtual"].includes(apiInfo(kind).group);

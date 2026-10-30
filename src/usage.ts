@@ -107,6 +107,7 @@ const localSlots = async (backend: Backend, deps: UsageDeps): Promise<Sample> =>
 
 const NO_USAGE_API: Partial<Record<Backend["type"], string>> = {
   opencode: "OpenCode Zen has no usage API; balance and limits are in its console",
+  direct: "Routes straight to the engines; see each engine's row",
   openai: "This endpoint has no standard usage API",
   other: "Names only; nothing to ask",
 };

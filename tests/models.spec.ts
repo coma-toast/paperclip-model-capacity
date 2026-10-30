@@ -88,4 +88,16 @@ describe("list-backend-models action", () => {
     expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "p" }, user)).toMatchObject({ ok: true, models: ["litellm/a"] });
     expect(f.requests[0].headers.authorization?.startsWith("Bearer ")).toBe(true);
   });
+
+  it("lists a direct-to-engines backend as every local engine's models with the engine's prefix", async () => {
+    const mac = await fake(openAi(["qwen"]));
+    const gpu = await fake(openAi(["strata"]));
+    const harness = withApi();
+    harness.setConfig({ backends: [
+      { id: "direct", name: "Direct", type: "direct" },
+      { id: "mac", name: "Mac", type: "omlx", baseUrl: mac.baseUrl, prefix: "omlx/" },
+      { id: "gpu", name: "GPU", type: "llamacpp", baseUrl: gpu.baseUrl, prefix: "llamacpp/" },
+    ] });
+    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "direct" }, user)).toEqual({ ok: true, source: "local engines", models: ["llamacpp/strata", "omlx/qwen"] });
+  });
 });

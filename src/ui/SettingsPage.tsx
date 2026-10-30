@@ -3,7 +3,7 @@ import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCom
 
 import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
-import { APIS, addPrefix, apiInfo, backendFromConnection, stripPrefix, type ApiKind } from "../apis.js";
+import { APIS, addPrefix, apiInfo, backendFromConnection, frontsEngines, hasEndpoint, stripPrefix, type ApiKind } from "../apis.js";
 import { backendPrefix, type Backend, type BackendSummary } from "../backends.js";
 import { virtualModel } from "../constants.js";
 import type { ListModelsResult } from "../models.js";
@@ -163,7 +163,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
   const [problem, setProblem] = useState<string>();
   const info = apiInfo(draft.type);
   const set = (patch: Partial<Omit<Backend, "key">>) => { setDraft({ ...draft, ...patch }); setResult(null); };
-  const needsAddress = !info.defaultBaseUrl && info.group !== "names";
+  const needsAddress = !info.defaultBaseUrl && hasEndpoint(draft.type);
 
   const runTest = async () => {
     setBusy("test");
@@ -227,8 +227,8 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ) : null}
         <Field label="Type" hint={info.hint}>
           <select style={inputStyle} value={draft.type} onChange={(e) => set({ type: e.target.value as ApiKind, prefix: undefined, baseUrl: undefined })}>
-            {(["gateway", "cloud", "local", "names"] as const).map((group) => (
-              <optgroup key={group} label={{ gateway: "Proxies and gateways", cloud: "Cloud APIs", local: "Local engines", names: "Other" }[group]}>
+            {(["gateway", "virtual", "cloud", "local", "names"] as const).map((group) => (
+              <optgroup key={group} label={{ gateway: "Proxies and gateways", virtual: "No proxy", cloud: "Cloud APIs", local: "Local engines", names: "Other" }[group]}>
                 {APIS.filter((a) => a.group === group).map((a) => <option key={a.kind} value={a.kind}>{a.label}</option>)}
               </optgroup>
             ))}
@@ -237,12 +237,12 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         <Field label="Name" hint="Shown on pools, e.g. Home proxy or Laptop Ollama.">
           <input style={inputStyle} value={draft.name} placeholder={info.label} onChange={(e) => set({ name: e.target.value })} />
         </Field>
-        {info.group !== "names" ? (
+        {hasEndpoint(draft.type) ? (
           <Field label="Address" hint={info.defaultBaseUrl ? `${info.label}'s usual address; change it only for a different region or proxy.` : info.group === "local" ? "The engine itself; the plugin checks its health and load here." : "The plugin only reads from it (model list, health)."}>
             <input style={inputStyle} value={draft.baseUrl ?? info.defaultBaseUrl} placeholder={info.placeholderUrl} onChange={(e) => set({ baseUrl: e.target.value })} />
           </Field>
         ) : null}
-        {info.group !== "names" ? (
+        {hasEndpoint(draft.type) ? (
           connectionKey ? (
             <Field label="API key" hint="Test connection runs without it; Check uses it once saved.">
               <span style={{ fontSize: 13 }}>
@@ -266,12 +266,12 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
             </Field>
           ) : null}
         </div>
-        {info.group !== "names" ? (
+        {hasEndpoint(draft.type) ? (
           <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} /> Custom auth header
           </label>
         ) : null}
-        {advanced && info.group !== "names" ? (
+        {advanced && hasEndpoint(draft.type) ? (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Header" hint="Defaults to Authorization."><input style={inputStyle} value={draft.header ?? ""} placeholder="Authorization" onChange={(e) => set({ header: e.target.value })} /></Field>
             <Field label="Scheme" hint="Put before the key; empty for none."><input style={inputStyle} value={draft.scheme ?? "Bearer"} onChange={(e) => set({ scheme: e.target.value })} /></Field>
@@ -288,7 +288,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ) : null}
         {problem ? <span style={{ color: "#ef4444", fontSize: 13 }}>{problem}</span> : null}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {info.group !== "names" ? <Button onClick={() => void runTest()} disabled={busy !== ""}>{busy === "test" ? "Testing…" : "Test connection"}</Button> : null}
+          {hasEndpoint(draft.type) ? <Button onClick={() => void runTest()} disabled={busy !== ""}>{busy === "test" ? "Testing…" : "Test connection"}</Button> : null}
           <span style={{ flex: 1 }} />
           <Button onClick={onClose}>Cancel</Button>
           <Button kind="primary" onClick={() => void save()} disabled={busy !== ""}>{busy === "save" ? "Saving…" : initial ? "Save backend" : "Add backend"}</Button>
@@ -344,7 +344,7 @@ const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId:
               {backendPrefix(b) ? <span style={MUTED}>models {backendPrefix(b)}…</span> : null}
               <span style={{ flex: 1 }} />
               <span style={MUTED}>{usedBy(b.id).length ? `used by ${usedBy(b.id).join(", ")}` : "not used"}</span>
-              {info.group !== "names" ? <Button onClick={() => void check(b)} disabled={checking === b.id}>{checking === b.id ? "Checking…" : "Check"}</Button> : null}
+              {hasEndpoint(b.type) ? <Button onClick={() => void check(b)} disabled={checking === b.id}>{checking === b.id ? "Checking…" : "Check"}</Button> : null}
               <Button onClick={() => setEditing(b)}>Edit</Button>
               <Button kind="danger" onClick={() => void remove(b)}>Remove</Button>
             </div>
@@ -467,8 +467,10 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
 };
 
 // P2.6: keep each task (and its subtasks) on one engine so its prompt cache is reused.
-const StickySection = ({ pool, engines, error, onChange }: {
+const StickySection = ({ pool, engines, error, onChange, defaultEngine }: {
   pool: PoolConfig; engines: BackendSummary[]; error?: string; onChange: (p: Partial<PoolConfig>) => void;
+  // Direct-to-engine pools: each model comes from one engine, so turning pinning on ties it there.
+  defaultEngine?: (model: string) => string | undefined;
 }) => {
   const sticky = pool.sticky;
   const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
@@ -486,7 +488,10 @@ const StickySection = ({ pool, engines, error, onChange }: {
     <div style={{ display: "grid", gap: 6 }}>
       <SectionTitle title="Keep each task on one engine" hint="For the prompt cache: a task and its subtasks run on the same engine every time instead of starting a new session elsewhere." />
       <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
-        <input type="checkbox" checked={sticky !== undefined} onChange={(e) => onChange({ sticky: e.target.checked ? [] : undefined, reassignAfterMinutes: undefined })} />
+        <input type="checkbox" checked={sticky !== undefined} onChange={(e) => onChange({
+          sticky: e.target.checked ? models.flatMap((model) => { const engine = defaultEngine?.(model); return engine ? [{ model, engine }] : []; }) : undefined,
+          reassignAfterMinutes: undefined,
+        })} />
         Pin tasks to an engine
       </label>
       {sticky !== undefined ? (
@@ -662,7 +667,7 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
         </select>
       </Field>
 
-      {backend && info!.group === "gateway" && locals.length ? (
+      {backend && frontsEngines(backend.type) && locals.length ? (
         <div style={{ display: "grid", gap: 4 }}>
           <SectionTitle title="Also watch these servers" hint={`Local engines ${backend.name} sends these models to. While they're down or busy with work from outside Paperclip, the pool releases nothing new.`} />
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -677,8 +682,9 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
         </div>
       ) : null}
 
-      {backend && info!.group === "gateway" && locals.length && pool.patterns.filter((m) => m.trim()).length ? (
-        <StickySection pool={pool} engines={locals} error={err("sticky") ?? err("reassignAfterMinutes")} onChange={onChange} />
+      {backend && frontsEngines(backend.type) && locals.length && pool.patterns.filter((m) => m.trim()).length ? (
+        <StickySection pool={pool} engines={locals} error={err("sticky") ?? err("reassignAfterMinutes")} onChange={onChange}
+          defaultEngine={backend.type === "direct" ? (m) => locals.find((b) => backendPrefix(b) && m.startsWith(backendPrefix(b)))?.id : undefined} />
       ) : null}
       {pool.patterns.some((m) => m.trim()) ? (
         <AgentsSection pool={pool} saved={saved} agents={agents} error={err("agentModel")} onChange={onChange} onAgentsChanged={onAgentsChanged} />

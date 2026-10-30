@@ -1,8 +1,8 @@
 import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
 import { collectAgentModels } from "./agentModels.js";
-import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
-import { backendBaseUrl, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
+import { APIS, addPrefix, apiInfo, inferApi, type ApiKind } from "./apis.js";
+import { backendBaseUrl, backendPrefix, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
 import { PRIORITY_RANK } from "./constants.js";
 import { harnessConfig } from "./harness.js";
 import { listBackendModels } from "./models.js";
@@ -287,6 +287,18 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
     const backend = await savedBackend(companyId, params.backendId);
     if (!backend) return { ok: false, error: "Pick a backend for this pool first" };
+    // Direct to engines: the local engines' models, each with its engine's prefix.
+    if (backend.type === "direct") {
+      const engines = readBackends(await ctx.config.get(companyId)).filter((b) => apiInfo(b.type).group === "local");
+      if (!engines.length) return { ok: false, error: "Add a local engine backend first" };
+      const lists = await Promise.all(engines.map(async (e) => ({
+        engine: e, list: await listBackendModels(ctx, e, await runtime.backendAuth.headersFor(companyId, e.id).catch(() => undefined)),
+      })));
+      const models = lists.flatMap(({ engine, list }) => (list.ok ? list.models.map((m) => addPrefix(backendPrefix(engine), m)) : []));
+      const failed = lists.filter(({ list }) => !list.ok).map(({ engine }) => engine.name);
+      if (!models.length) return { ok: false, error: `Couldn't list any engine's models${failed.length ? ` (${failed.join(", ")} didn't answer)` : ""}` };
+      return { ok: true, source: "local engines", models: [...new Set(models)].sort() };
+    }
     try {
       return await listBackendModels(ctx, backend, await runtime.backendAuth.headersFor(companyId, backend.id));
     } catch (e) {
