@@ -107,6 +107,20 @@ describe("invocation context (live-install bug, 2026-10-29)", () => {
     expect((await dir.list()).map((c) => c.id).sort()).toEqual(["c1", "c9"]);
   });
 
+  it("never drops a saved company when an event's scoped list shows only its own company", async () => {
+    const { harness, runtime } = await setup();
+    const { createCompanyDirectory } = await import("../src/snapshot.js");
+    let now = 0;
+    await runtime.store.companies.set([{ id: "jd", name: "JD" }, { id: "slide", name: "slide" }]);
+    const dir = createCompanyDirectory(harness.ctx, runtime.store, () => now);
+    harness.ctx.companies.list = async () => [{ id: "slide", name: "Slide" }] as never;
+    now = 6 * 60_000;
+    await dir.noteFromEvent("slide");
+    expect((await dir.list()).map((c) => [c.id, c.name])).toEqual([["jd", "JD"], ["slide", "Slide"]]);
+    await dir.note("other");
+    expect((await dir.list()).map((c) => c.id)).toEqual(["jd", "slide", "other"]);
+  });
+
   it("stops listing a refused company until the backoff passes", async () => {
     const { harness, runtime } = await setup();
     const { createCompanyDirectory, DENIED_COMPANY_BACKOFF_MS } = await import("../src/snapshot.js");

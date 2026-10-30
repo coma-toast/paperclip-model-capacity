@@ -1,10 +1,10 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 import { backendsConfigSchema } from "./backends.js";
-import { PRUNE_CRON, SWEEP_CRON } from "./constants.js";
+import { PLUGIN_KEY, PRUNE_CRON, SWEEP_CRON } from "./constants.js";
 
 const manifest: PaperclipPluginManifestV1 = {
-  id: "coma-toast.paperclip-model-capacity",
+  id: PLUGIN_KEY,
   apiVersion: 1,
   version: "0.1.0",
   displayName: "Model capacity",
