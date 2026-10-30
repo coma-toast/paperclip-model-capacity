@@ -50,3 +50,20 @@ export const inferApi = (patterns: string[]): ApiKind => {
 
 export const stripPrefix = (prefix: string, pattern: string) => (prefix && pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern);
 export const addPrefix = (prefix: string, name: string) => (!prefix || name.startsWith(prefix) ? name : `${prefix}${name}`);
+
+// A Paperclip AI connection ("Connections" in company settings), as far as a backend needs it.
+export interface AiConnectionLike {
+  provider: string;
+  method: string;
+  routing?: { kind?: string; baseUrl?: string } | null;
+}
+
+// What a connection becomes as a backend, or why it can't be one. Subscriptions (ChatGPT, Claude plans) aren't API
+// endpoints; their usage windows show under Subscriptions instead.
+export const backendFromConnection = (c: AiConnectionLike): { type: ApiKind; baseUrl: string } | { reason: string } => {
+  if (c.method === "subscription") return { reason: "a subscription; its usage shows under Subscriptions" };
+  if (c.provider === "openrouter" || c.routing?.kind === "openrouter") return { type: "openrouter", baseUrl: c.routing?.baseUrl || apiInfo("openrouter").defaultBaseUrl };
+  if (c.routing?.baseUrl) return { type: "openai", baseUrl: c.routing.baseUrl };
+  if (c.provider === "openai") return { type: "openai", baseUrl: "https://api.openai.com/v1" };
+  return { reason: "not an OpenAI-compatible API" };
+};
