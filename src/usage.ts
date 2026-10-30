@@ -47,7 +47,17 @@ type Sample = Pick<BackendUsage, "meters" | "notes" | "source">;
 // LiteLLM: the key's own spend and budget (/key/info), plus its team's when the key belongs to one.
 const liteLlm = async (base: string, deps: UsageDeps): Promise<Sample> => {
   const pc = { baseUrl: base, fetch: deps.fetch, headers: deps.headers, timeoutMs: deps.timeoutMs };
-  const body = await getJson<{ info?: Record<string, unknown> }>(pc, "/key/info");
+  let body: { info?: Record<string, unknown> };
+  try {
+    body = await getJson<{ info?: Record<string, unknown> }>(pc, "/key/info");
+  } catch (e) {
+    // A master key or a key from the proxy's config file has no spend record of its own (404). /global/spend would
+    // cover the whole proxy but takes 20 s+ on a busy proxy, too slow to sample.
+    if (e instanceof Error && /returned 404\b/.test(e.message)) {
+      throw new Error("This key isn't a LiteLLM virtual key (master or config key), so LiteLLM keeps no spend for it. Save the virtual key your agents use to see spend.");
+    }
+    throw e;
+  }
   const info = body.info ?? (body as Record<string, unknown>);
   const meters: UsageMeter[] = [meter({
     label: "Key spend", unit: "usd", used: num(info.spend), limit: num(info.max_budget), resetAt: str(info.budget_reset_at), period: str(info.budget_duration), noLimit: "no budget set",

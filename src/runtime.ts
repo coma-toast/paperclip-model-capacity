@@ -65,6 +65,8 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   let usageTimer: ReturnType<typeof setInterval> | undefined;
   let lastCycleAt: string | undefined;
   let lastError: string | undefined;
+  // A failure alert can outlive a restart (lastError resets), so the first good cycle after start clears it too.
+  let clearAfterStart = true;
   let lastSnapshot: Snapshot | undefined;
 
   // One cycle at a time, so two triggers never read the same state and both act on it.
@@ -82,8 +84,9 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
         const alerts = actions.flatMap((a) => (a.kind === "alert" ? [a.alert] : []));
         await alerter.sync(LEVEL_KINDS, alerts, now().toISOString());
         lastCycleAt = now().toISOString();
-        if (lastError) await alerter.apply([pluginError("clear", "Capacity cycles are running again")]);
+        if (lastError || clearAfterStart) await alerter.apply([pluginError("clear", "Capacity cycles are running again")]);
         lastError = undefined;
+        clearAfterStart = false;
       } catch (e) {
         lastError = errText(e);
         ctx.logger.warn("Model capacity cycle failed", { reason, error: lastError });
