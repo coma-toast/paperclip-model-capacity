@@ -36,4 +36,18 @@ describe("harnessConfig", () => {
   it("returns nothing when no pool pins tasks", () => {
     expect(harnessConfig([pool("plain", { backend: "proxy" })], backends)).toEqual({ provider: {}, warnings: [] });
   });
+
+  it("direct to engines: falls back to the first engine itself and adds a provider per engine", () => {
+    const engines = [
+      { id: "direct", name: "Direct", type: "direct" as const },
+      { id: "mac", name: "Mac", type: "omlx" as const, baseUrl: "http://mac:1235", prefix: "omlx/" },
+      { id: "gpu", name: "GPU", type: "llamacpp" as const, baseUrl: "http://gpu:8091", prefix: "llamacpp/" },
+    ];
+    const r = harnessConfig([pool("local", { backend: "direct", patterns: ["omlx/qwen", "llamacpp/strata"], sticky: [{ model: "omlx/qwen", engine: "mac" }, { model: "llamacpp/strata", engine: "gpu" }] })], engines);
+    expect(r.provider).toMatchObject({
+      omlx: { options: { baseURL: "http://mac:1235/v1", apiKey: "{env:MAC_API_KEY}" }, models: { qwen: { name: "omlx/qwen" } } },
+      llamacpp: { options: { baseURL: "http://gpu:8091/v1", apiKey: "{env:GPU_API_KEY}" }, models: { strata: { name: "llamacpp/strata" } } },
+      pool: { options: { baseURL: "http://mac:1235/v1", apiKey: "{env:MAC_API_KEY}" }, models: { local: { id: "qwen" } } },
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addPrefix, backendFromConnection, inferApi, poolPrefix, stripPrefix } from "../src/apis.js";
+import { addPrefix, backendFromConnection, frontsEngines, hasEndpoint, inferApi, poolPrefix, stripPrefix } from "../src/apis.js";
 
 describe("API prefixes", () => {
   it("adds and strips a prefix, leaving other names alone", () => {
@@ -31,5 +31,13 @@ describe("backendFromConnection", () => {
     expect(backendFromConnection({ provider: "openai", method: "api_key" })).toEqual({ type: "openai", baseUrl: "https://api.openai.com/v1" });
     expect(backendFromConnection({ provider: "openai", method: "subscription" })).toEqual({ reason: "a subscription; its usage shows under Subscriptions" });
     expect(backendFromConnection({ provider: "anthropic", method: "api_key" })).toEqual({ reason: "not an OpenAI-compatible API" });
+  });
+});
+
+describe("backend groups", () => {
+  it("a direct backend fronts engines but has no endpoint of its own", () => {
+    expect([frontsEngines("direct"), hasEndpoint("direct")]).toEqual([true, false]);
+    expect([frontsEngines("litellm"), hasEndpoint("litellm")]).toEqual([true, true]);
+    expect([frontsEngines("ollama"), hasEndpoint("ollama")]).toEqual([false, true]);
   });
 });
