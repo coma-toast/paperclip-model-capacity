@@ -100,6 +100,9 @@ export interface RunningRun {
   model?: string;
   status: "queued" | "running";
   startedAt?: string;
+  // Queued behind its own agent's running run: it waits for the agent, not for a model slot, so it doesn't count
+  // against the pool (its task still counts as having a run, so it isn't held twice).
+  waitingOnAgent?: boolean;
   // For display only.
   agentName?: string;
   issueIdentifier?: string;

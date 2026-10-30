@@ -71,8 +71,10 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
   };
   const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
 
-  // B2: running and queued runs, plus released tasks whose run hasn't shown up yet.
+  // B2: running and queued runs, plus released tasks whose run hasn't shown up yet. A run queued behind its own agent
+  // doesn't hold a model slot.
   for (const run of snapshot.runs) {
+    if (run.waitingOnAgent) continue;
     const group = groupFor(run.poolId, run.companyId);
     if (!group) continue;
     bump(counts, group.key);

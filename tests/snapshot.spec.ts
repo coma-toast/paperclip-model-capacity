@@ -92,6 +92,12 @@ describe("buildSnapshot", () => {
     expect(s.tasks.map((t) => t.issueId)).toContain("i11");
   });
 
+  it("marks a queued run whose agent is already running as waiting on the agent", async () => {
+    const { deps } = await setup([row("r1", "c1", "a1", "i1"), row("r2", "c1", "a1", "i2", "queued"), row("r3", "c1", "a2", "i4", "queued")]);
+    const s = await buildSnapshot(deps);
+    expect(s.runs.map((r) => [r.runId, r.waitingOnAgent ?? false])).toEqual([["r1", false], ["r2", true], ["r3", false]]);
+  });
+
   it("marks tasks with a run, the override's pool and pins", async () => {
     const { deps } = await setup();
     const s = await buildSnapshot(deps);
