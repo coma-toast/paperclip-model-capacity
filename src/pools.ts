@@ -1,5 +1,6 @@
 import { apiInfo } from "./apis.js";
 import { backendBaseUrl, backendPrefix, probeBaseUrl, type Backend } from "./backends.js";
+import { virtualModel } from "./constants.js";
 import type { Store } from "./state/store.js";
 import type { HostConfig, PoolConfig } from "./types.js";
 
@@ -45,6 +46,8 @@ export const resolvePool = (pool: PoolConfig, backends: Backend[]): PoolConfig =
 export const scopedPools = (companyId: string, pools: PoolConfig[], backends: Backend[] = []): PoolConfig[] =>
   pools.map((raw) => resolvePool(raw, backends)).map((p) => ({
     ...p, id: poolKey(companyId, p.id), localId: p.id, companyId, scope: "instance",
+    // Tasks on the pool's virtual model belong to it (as an entry model when it pins tasks to engines).
+    patterns: [...new Set([...p.patterns, virtualModel(p.id)])],
     hosts: p.hosts.map((h) => ({ ...h, id: poolKey(companyId, h.id) })),
     ...(p.placement ? { placement: p.placement.map((t) => ({ ...t, hostId: poolKey(companyId, t.hostId) })) } : {}),
   }));

@@ -1,5 +1,5 @@
 import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
-import { DEFAULT_ALERT_AFTER_MINUTES } from "./constants.js";
+import { DEFAULT_ALERT_AFTER_MINUTES, virtualModel } from "./constants.js";
 import type { EngineKind, HostConfig, PoolConfig } from "./types.js";
 
 export interface FieldError {
@@ -103,8 +103,9 @@ export const validatePools = (input: unknown): ValidationResult => {
         errors.push({ field: `${at}.sticky`, message: "Every model tied to an engine must be one of the pool's models" });
       }
     }
-    if (raw.agentModel !== undefined && !(isText(raw.agentModel) && isTextList(raw.patterns) && (raw.patterns as string[]).includes(raw.agentModel as string))) {
-      errors.push({ field: `${at}.agentModel`, message: "Must be one of the pool's models" });
+    const ownVirtual = isText(raw.id) && raw.agentModel === virtualModel(raw.id as string);
+    if (raw.agentModel !== undefined && !ownVirtual && !(isText(raw.agentModel) && isTextList(raw.patterns) && (raw.patterns as string[]).includes(raw.agentModel as string))) {
+      errors.push({ field: `${at}.agentModel`, message: "Must be the pool's virtual model or one of its models" });
     }
     if (raw.reassignAfterMinutes !== undefined && !isWhole(raw.reassignAfterMinutes, 1)) errors.push({ field: `${at}.reassignAfterMinutes`, message: "Must be a whole number of minutes, 1 or more" });
     // With a backend, the API, prefix and address come from it (checked against the company's backends on save).

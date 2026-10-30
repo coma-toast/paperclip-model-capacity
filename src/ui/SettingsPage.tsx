@@ -5,6 +5,7 @@ import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
 import { APIS, addPrefix, apiInfo, backendFromConnection, stripPrefix, type ApiKind } from "../apis.js";
 import { backendPrefix, type Backend, type BackendSummary } from "../backends.js";
+import { virtualModel } from "../constants.js";
 import type { ListModelsResult } from "../models.js";
 import type { InspectResult } from "../probes/inspect.js";
 import { patternMatches } from "../scheduler/match.js";
@@ -555,9 +556,10 @@ const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <SectionTitle title="Agents on this pool" hint="Agents use the pool instead of a specific model by pointing at its agent model." />
-      <Field label="Agent model" hint={pool.sticky ? "Pick a model left as \"Any engine\" so the pool chooses each task's engine; it must also work on its own." : "The model agents on this pool use."} error={error}>
+      <Field label="Agent model" hint={pool.sticky?.length ? `${virtualModel(pool.id)} lets the pool pick each task's engine. Add the harness config below so it also works before a task is placed.` : "The model agents on this pool use."} error={error}>
         <select style={inputStyle} value={pool.agentModel ?? ""} onChange={(e) => onChange({ agentModel: e.target.value || undefined })}>
           <option value="">None</option>
+          {pool.sticky?.length ? <option value={virtualModel(pool.id)}>{virtualModel(pool.id)} (virtual: the pool picks the engine)</option> : null}
           {models.map((m) => <option key={m} value={m}>{m}{pinned.has(m) ? " (tied to an engine)" : ""}</option>)}
         </select>
       </Field>
@@ -573,6 +575,25 @@ const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }
         </>
       ) : null}
     </div>
+  );
+};
+
+// The harness side of virtual models: a provider block to add to the agents' OpenCode configuration.
+const HarnessConfigCard = ({ companyId, version }: { companyId: string; version: string }) => {
+  const config = usePluginData<{ provider: Record<string, unknown>; warnings: string[] }>("harness-config", { companyId, version });
+  const toast = usePluginToast();
+  if (!config.data || !Object.keys(config.data.provider).length) return null;
+  const text = JSON.stringify(config.data.provider, null, 2);
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <SectionTitle title="Harness config" hint="Add this provider to your agents' OpenCode configuration, so a pool's virtual model also works for a run that starts before the plugin places its task." />
+        <span style={{ flex: 1 }} />
+        <Button onClick={() => void navigator.clipboard.writeText(text).then(() => toast({ title: "Copied", tone: "success" }))}>Copy</Button>
+      </div>
+      <pre style={{ margin: 0, padding: 10, borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, overflowX: "auto" }}>{text}</pre>
+      {config.data.warnings.map((w) => <span key={w} style={MUTED}>{w}</span>)}
+    </Card>
   );
 };
 
@@ -747,6 +768,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
         </span>
       </div>
       <BackendsSection companyId={companyId} backends={backends} pools={pools} onChanged={() => config.refresh()} />
+      <HarnessConfigCard companyId={companyId} version={saved} />
       <AgentModelsPanel uses={agentModels.data?.uses ?? []} pools={pools} backends={backends}
         onAdd={(i, model) => update(i, { patterns: [...pools[i].patterns.filter((p) => p.trim()), model] })}
         onNewPool={(group) => setPools([...pools, poolFromAgents(group, pools, backends)])} />

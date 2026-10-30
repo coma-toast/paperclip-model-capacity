@@ -73,6 +73,8 @@ describe("sticky pool settings (P2.6)", () => {
     expect(validatePools([{ ...base, sticky: [{ model: "l/mbp", engine: "mac" }, { model: "l/mbp", engine: "gpu" }] }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].sticky" }] });
     expect(validatePools([{ ...base, reassignAfterMinutes: 0 }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].reassignAfterMinutes" }] });
     expect(validatePools([{ ...base, agentModel: "l/local" }])).toMatchObject({ ok: true });
+    expect(validatePools([{ ...base, agentModel: "pool/local" }])).toMatchObject({ ok: true });
+    expect(validatePools([{ ...base, agentModel: "pool/other" }])).toMatchObject({ ok: false });
     expect(validatePools([{ ...base, agentModel: "l/elsewhere" }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].agentModel" }] });
   });
 });

@@ -80,4 +80,9 @@ describe("sticky pools (P2.6)", () => {
   it("places nothing while the pool is disabled", () => {
     expect(short(decide(snapshot({ pools: [local({ disabled: true })], hosts: bothUp, tasks: [task("t1", { model: "l/local" })] })))).toEqual(["hold t1"]);
   });
+
+  it("places a task on the pool's virtual model like any entry model", () => {
+    const pinning = local({ patterns: ["l/mbp", "l/vm", "pool/gpu"] });
+    expect(short(decide(snapshot({ pools: [pinning], hosts: bothUp, tasks: [task("t1", { model: "pool/gpu" })] })))).toEqual(["place t1 l/mbp new"]);
+  });
 });
