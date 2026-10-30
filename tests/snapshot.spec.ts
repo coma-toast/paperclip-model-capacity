@@ -76,6 +76,22 @@ describe("buildSnapshot", () => {
     expect(s.tasks.map((t) => t.issueId).sort()).toEqual(["i10", "i11", "i4", "i8"]);
   });
 
+  it("leaves out blocked tasks waiting on their own blockers, but not ones only behind our queue blocker", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    const issues = [...ISSUES.filter((i) => !["i10", "i11"].includes(i.id)),
+      issue("i10", "c2", "a4", { status: "blocked" }), issue("i11", "c2", "a4", { status: "blocked" }), issue("dep", "c2", null), issue("q", "c2", null)];
+    harness.seed({ companies: [company("c1"), company("c2")], agents: AGENTS, issues });
+    const store = createStore(harness.ctx.state);
+    await store.companyPools("c1").set(POOLS);
+    await store.companyPools("c2").set(POOLS);
+    await store.queueBlockers("c2").set({ "c2:free": "q" });
+    await harness.ctx.issues.relations.addBlockers("i10", ["dep"], "c2");
+    await harness.ctx.issues.relations.addBlockers("i11", ["q"], "c2");
+    const s = await buildSnapshot({ ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => RUNS, now: new Date(NOW) });
+    expect(s.tasks.map((t) => t.issueId)).not.toContain("i10");
+    expect(s.tasks.map((t) => t.issueId)).toContain("i11");
+  });
+
   it("marks tasks with a run, the override's pool and pins", async () => {
     const { deps } = await setup();
     const s = await buildSnapshot(deps);

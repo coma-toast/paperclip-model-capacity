@@ -118,6 +118,25 @@ export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: 
   };
 };
 
+// Blocked tasks' blockers, cached briefly: issue lists don't include them, and reading each one every cycle is costly.
+export const BLOCKER_CACHE_TTL_MS = 120_000;
+const DONE_STATUSES = new Set(["done", "cancelled"]);
+export const createBlockerCache = (ctx: PluginContext, ttlMs = BLOCKER_CACHE_TTL_MS, clock: () => number = Date.now) => {
+  const cache = new Map<string, { at: number; ids: string[] }>();
+  return {
+    // Ids of the task's blockers that aren't done or cancelled.
+    unresolved: async (issueId: string, companyId: string) => {
+      const hit = cache.get(issueId);
+      if (hit && clock() - hit.at < ttlMs) return hit.ids;
+      const relations = await ctx.issues.relations.get(issueId, companyId);
+      const ids = relations.blockedBy.filter((b) => !DONE_STATUSES.has(String(b.status))).map((b) => b.id);
+      cache.set(issueId, { at: clock(), ids });
+      return ids;
+    },
+  };
+};
+export type BlockerCache = ReturnType<typeof createBlockerCache>;
+
 export interface SnapshotDeps {
   ctx: PluginContext;
   store: Store;
@@ -125,13 +144,14 @@ export interface SnapshotDeps {
   readRuns: RunReader;
   listCompanies?: () => Promise<Company[]>;
   backendsFor?: BackendsFor;
+  blockers?: BlockerCache;
   now?: Date;
 }
 
 // Agent statuses Paperclip won't start a run for.
 export const NOT_RUNNABLE_AGENT: ReadonlySet<string> = new Set(["paused", "pausing", "terminated", "pending_approval"]);
 
-export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, backendsFor, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
+export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [hosts, holds, released, overrides, exemptions] = await Promise.all([
     store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
   ]);
@@ -183,6 +203,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
 
   const runIssues = new Set(runs.map((r) => r.issueId).filter(Boolean));
   const tasks: OpenTask[] = [];
+  const queueBlockerIds = new Map<string, Set<string>>();
   for (const issue of issuesById.values()) {
     const agent = issue.assigneeAgentId ? agentsByCompany.get(issue.companyId)?.get(issue.assigneeAgentId) : undefined;
     // A paused or stopped agent can't be woken, so its tasks neither queue nor take a slot: holding them would only
@@ -190,6 +211,13 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     if (!agent || NOT_RUNNABLE_AGENT.has(String(agent.status))) continue;
     const pool = poolOf(issue.companyId, effectiveModel(issue, agent));
     if (!pool) continue;
+    // A task waiting on its own unfinished blockers can't run, so it neither queues nor takes a slot. Our queue blocker
+    // doesn't count.
+    if (issue.status === "blocked") {
+      if (!queueBlockerIds.has(issue.companyId)) queueBlockerIds.set(issue.companyId, new Set(Object.values(await store.queueBlockers(issue.companyId).get())));
+      const own = await blockers.unresolved(issue.id, issue.companyId).catch(() => []);
+      if (own.some((id) => !queueBlockerIds.get(issue.companyId)?.has(id))) continue;
+    }
     tasks.push({
       issueId: issue.id, companyId: issue.companyId, agentId: agent.id, poolId: pool.id, priority: toPriority(issue.priority),
       status: issue.status, hasActiveRun: runIssues.has(issue.id), exempt: exemptIssues.has(issue.id), pinned: isPinned(issue, overrides),

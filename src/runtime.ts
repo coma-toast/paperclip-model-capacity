@@ -9,7 +9,7 @@ import { createExecutor } from "./executor.js";
 import { loadScopedPools, splitPoolKey } from "./pools.js";
 import { probeAll } from "./probes/index.js";
 import { decide } from "./scheduler/decide.js";
-import { buildSnapshot, createAgentCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
+import { buildSnapshot, createAgentCache, createBlockerCache, createCompanyDirectory, dbRunReader, type RunReader } from "./snapshot.js";
 import { createStore } from "./state/store.js";
 import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { sampleUsage, type BackendUsage } from "./usage.js";
@@ -37,6 +37,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const store = createStore(ctx.state);
   const companies = createCompanyDirectory(ctx, store);
   const agents = createAgentCache(ctx);
+  const blockers = createBlockerCache(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
   const configId = async (companyId: string, key: string) => {
     const value = (await ctx.config.get(companyId))[key];
@@ -73,7 +74,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   const cycle = (reason: string) => {
     chain = chain.then(async () => {
       try {
-        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, backendsFor, now: now() });
+        let snapshot = await buildSnapshot({ ctx, store, agents, readRuns, listCompanies: companies.list, backendsFor, blockers, now: now() });
         companies.markDenied(snapshot.diagnostics?.skippedCompanies ?? []);
         await executor.reconcileHolds(snapshot);
         await executor.confirmWakes(snapshot);
