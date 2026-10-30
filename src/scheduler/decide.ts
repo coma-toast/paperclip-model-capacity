@@ -41,7 +41,8 @@ export const availableCapacity = (pool: PoolConfig, snapshot: Snapshot, papercli
     probedBusy += status.slotsBusy ?? 0;
   }
   const outsideBusy = Math.max(0, probedBusy - paperclipRunsInPool);
-  return Math.max(0, Math.min(pool.limit, slots - outsideBusy));
+  // A pool matching its engines takes the slots they report now, which may differ from the backends' setting.
+  return Math.max(0, Math.min(pool.limitFromEngines ? Infinity : pool.limit, slots - outsideBusy));
 };
 
 const anyHostUp = (pool: PoolConfig, snapshot: Snapshot) => pool.hosts.length === 0 || pool.hosts.some((h) => snapshot.hosts[h.id]?.up);

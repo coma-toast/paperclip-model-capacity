@@ -474,6 +474,9 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
   const info = backend ? apiInfo(backend.type) : undefined;
   const prefix = backend ? backendPrefix(backend) : "";
   const locals = backends.filter((b) => b.id !== backend?.id && apiInfo(b.type).group === "local");
+  // The engines this pool runs on: its backend if that's a local engine, plus the ones it watches.
+  const engines = [...(backend && apiInfo(backend.type).group === "local" ? [backend] : []), ...locals.filter((b) => pool.watch?.includes(b.id))];
+  const engineSlots = engines.reduce((n, b) => n + (b.slots ?? 1), 0);
   // Switching backend keeps the names picked and moves them under the new backend's prefix.
   const switchBackend = (id: string) => {
     const next = backends.find((b) => b.id === id);
@@ -496,9 +499,19 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12 }}>
         <Field label="Name" error={err("name")}><input style={inputStyle} value={pool.name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
         <Field label="Id" hint="Short, unique, no spaces" error={err("id")}><input style={inputStyle} value={pool.id} onChange={(e) => onChange({ id: e.target.value })} /></Field>
-        <Field label="Max runs at once" hint="0 holds everything" error={err("limit")}>
-          <input style={inputStyle} type="number" min={0} value={pool.limit} onChange={(e) => onChange({ limit: Number(e.target.value) })} />
-        </Field>
+        <div style={{ display: "grid", gap: 4, alignContent: "start" }}>
+          <Field label="Max runs at once" hint={pool.limitFromEngines && engines.length ? "Follows the engines' slots" : "0 holds everything"} error={err("limit")}>
+            <input style={inputStyle} type="number" min={0} disabled={Boolean(pool.limitFromEngines && engines.length)}
+              value={pool.limitFromEngines && engines.length ? engineSlots : pool.limit} onChange={(e) => onChange({ limit: Number(e.target.value) })} />
+          </Field>
+          {engines.length ? (
+            <label style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
+              <input type="checkbox" checked={pool.limitFromEngines ?? false}
+                onChange={(e) => onChange({ limitFromEngines: e.target.checked || undefined, ...(e.target.checked ? { limit: engineSlots } : {}) })} />
+              Match its engines ({engineSlots} slot{engineSlots === 1 ? "" : "s"})
+            </label>
+          ) : null}
+        </div>
         <Field label="Alert after waiting" hint="Minutes" error={err("alertAfterMinutes")}>
           <input style={inputStyle} type="number" min={1} value={pool.alertAfterMinutes} onChange={(e) => onChange({ alertAfterMinutes: Number(e.target.value) })} />
         </Field>

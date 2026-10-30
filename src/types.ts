@@ -55,6 +55,9 @@ export interface PoolConfig {
   endpoint?: PoolEndpoint;
   patterns: string[];
   limit: number;
+  // The limit follows the pool's engines (its backend if that's a local engine, plus the ones it watches): their slots
+  // as reported, or as set on the backend. `limit` then shows the backends' total.
+  limitFromEngines?: boolean;
   privacy: PoolPrivacy;
   mode: PoolMode;
   scope: PoolScope;

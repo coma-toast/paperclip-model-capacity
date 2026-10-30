@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
 import manifest from "../src/manifest.js";
-import { loadScopedPools } from "../src/pools.js";
+import { loadScopedPools, resolvePool } from "../src/pools.js";
 import { createStore } from "../src/state/store.js";
 import type { PoolConfig } from "../src/types.js";
 
@@ -22,5 +22,18 @@ describe("loadScopedPools", () => {
     });
     expect(asked).toEqual(["with"]);
     expect(pools.map((p) => [p.id, p.api])).toEqual([["with:p", "litellm"], ["legacy:p", "litellm"]]);
+  });
+});
+
+describe("resolvePool", () => {
+  const backends = [
+    { id: "proxy", name: "Proxy", type: "litellm" as const, baseUrl: "https://p" },
+    { id: "gpu", name: "GPU", type: "llamacpp" as const, baseUrl: "http://gpu:8080", slots: 1 },
+    { id: "mac", name: "Mac", type: "omlx" as const, baseUrl: "http://mac:1235", slots: 4 },
+  ];
+  it("sets the limit to the engines' total slots when the pool matches its engines, and leaves it otherwise", () => {
+    expect(resolvePool(pool({ backend: "proxy", watch: ["gpu", "mac"], limit: 2, limitFromEngines: true }), backends).limit).toBe(5);
+    expect(resolvePool(pool({ backend: "proxy", watch: ["gpu", "mac"], limit: 2 }), backends).limit).toBe(2);
+    expect(resolvePool(pool({ backend: "proxy", limit: 2, limitFromEngines: true }), backends).limit).toBe(2);
   });
 });
