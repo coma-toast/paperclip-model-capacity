@@ -28,6 +28,7 @@ export interface PoolSummary {
   queued: number;
   oldestWaitSeconds: number | null;
   onHold: boolean;
+  disabled: boolean;
   openAlerts: number;
   hosts: { id: string; name: string; engine: string; up: boolean; slotsTotal?: number; slotsBusy?: number; lastProbeAt?: string }[];
 }
@@ -90,7 +91,7 @@ export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Dat
       id: pool.id, companyId: pool.companyId, localId: pool.localId, name: pool.name, api: pool.api ?? inferApi(pool.patterns), mode: pool.mode, privacy: pool.privacy, limit: pool.limit,
       available: availableCapacity(pool, snapshot, runs), inUse: runs + pending, queued: holds.length,
       oldestWaitSeconds: oldest ? Math.max(0, Math.round((now.getTime() - Date.parse(oldest)) / 1000)) : null,
-      onHold: snapshot.heldPools.includes(pool.id), openAlerts: openAlertPools.filter((p) => p === pool.id).length,
+      onHold: snapshot.heldPools.includes(pool.id), disabled: pool.disabled === true, openAlerts: openAlertPools.filter((p) => p === pool.id).length,
       hosts: pool.hosts.map((h) => {
         const s = snapshot.hosts[h.id];
         return { id: h.id, name: h.name, engine: h.engine, up: Boolean(s?.up), slotsTotal: s?.slotsTotal, slotsBusy: s?.slotsBusy, lastProbeAt: s?.lastProbeAt };

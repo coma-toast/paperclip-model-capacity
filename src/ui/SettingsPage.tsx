@@ -489,10 +489,15 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
       <header style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <strong style={{ fontSize: 16 }}>{pool.name || pool.id || "New pool"}</strong>
         {backend ? <Pill tone="ok">{backend.name}</Pill> : <Pill tone="warn">no backend</Pill>}
+        {pool.disabled ? <Pill tone="warn">Disabled</Pill> : null}
         <Pill tone={pool.mode === "enforce" ? "warn" : "info"}>{pool.mode === "enforce" ? "Enforcing" : "Observing only"}</Pill>
         <Pill>{pool.limit} run{pool.limit === 1 ? "" : "s"} at once</Pill>
         <Pill>{pool.privacy}</Pill>
         <span style={{ flex: 1 }} />
+        <Button onClick={() => onChange({ disabled: pool.disabled ? undefined : true })}
+          title={pool.disabled ? "Start releasing work again" : "Stop releasing new work; runs already going finish. Use before shutting an engine down."}>
+          {pool.disabled ? "Enable" : "Disable (drain)"}
+        </Button>
         <Button kind="danger" onClick={onRemove}>Remove pool</Button>
       </header>
 

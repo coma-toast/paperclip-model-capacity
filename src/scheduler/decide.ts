@@ -122,7 +122,8 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     // operator holds the pool (F2), or while every host is down (E3).
     let used = count;
     queue.sort(byQueueOrder);
-    if (!heldPools.has(pool.id) && anyHostUp(pool, snapshot)) {
+    const paused = heldPools.has(pool.id) || pool.disabled === true;
+    if (!paused && anyHostUp(pool, snapshot)) {
       for (const entry of queue.splice(0, Math.max(0, available - used))) {
         actions.push({ kind: "release", issueId: entry.issueId, companyId: entry.companyId, poolId: pool.id, reason: "capacity" });
         used += 1;
@@ -130,7 +131,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     }
 
     // C1: once the pool is full (or held), every other open, non-exempt task without a run waits behind the queue.
-    if (used >= available || heldPools.has(pool.id)) {
+    if (used >= available || paused) {
       const fresh = waiting
         .filter((t) => !isExempt(t) && !holdsByIssue.has(t.issueId))
         .map((t) => ({ issueId: t.issueId, companyId: t.companyId, priority: t.priority, heldAt: snapshot.now }));
@@ -140,7 +141,8 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
       }
     }
 
-    for (const entry of queue) {
+    // Waiting is the point of a disabled pool, so it doesn't alert.
+    for (const entry of pool.disabled ? [] : queue) {
       if (minutesSince(entry.heldAt, now) > pool.alertAfterMinutes) {
         actions.push({
           kind: "alert",

@@ -27,6 +27,14 @@ describe("limits", () => {
     expect(a).toEqual([]);
   });
 
+  it("a disabled pool lets runs finish, releases nothing, holds new work and doesn't alert", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 2, disabled: true })], runs: [run("r1")], tasks: [task("r1", { hasActiveRun: true }), task("t9")] }, heldTask("h1", { heldAt: minutesAgo(120) }));
+    const a = decide(s);
+    expect(a.filter((x) => x.kind === "release")).toEqual([]);
+    expect(holds(a)).toEqual([["t9", 2]]);
+    expect(a.filter((x) => x.kind === "alert")).toEqual([]);
+  });
+
   it("limit 1 with one run holds the rest", () => {
     const a = decide(snapshot({ runs: [run("r1")], tasks: [task("r1", { hasActiveRun: true }), task("t1")] }));
     expect(holds(a)).toEqual([["t1", 1]]);
