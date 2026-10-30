@@ -65,6 +65,17 @@ describe("buildSnapshot", () => {
     expect(byPool(s.runs)).toEqual({ "c1:gpu": 1, "c2:gpu": 1, "c2:free": 1 });
   });
 
+  it("leaves out tasks of paused or stopped agents, which can't be woken", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1"), company("c2")], agents: AGENTS.map((a) => (a.id === "a1" ? ({ ...a, status: "paused" }) as Agent : a)), issues: ISSUES });
+    const store = createStore(harness.ctx.state);
+    await store.companyPools("c1").set(POOLS);
+    await store.companyPools("c2").set(POOLS);
+    const s = await buildSnapshot({ ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => RUNS, now: new Date(NOW) });
+    // i1, i2 and i3 belong to a1.
+    expect(s.tasks.map((t) => t.issueId).sort()).toEqual(["i10", "i11", "i4", "i8"]);
+  });
+
   it("marks tasks with a run, the override's pool and pins", async () => {
     const { deps } = await setup();
     const s = await buildSnapshot(deps);

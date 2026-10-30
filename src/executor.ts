@@ -142,6 +142,11 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
         if (!relations.blockedBy.some((b) => b.id === held.blockerId)) reason = "queue blocker removed by a person";
       }
       if (!reason) continue;
+      // Our blocker comes off with the hold (unless a person already removed it), so the task isn't left blocked.
+      if (held.blockerId && reason !== "queue blocker removed by a person") {
+        await ctx.issues.relations.removeBlockers(held.issueId, [held.blockerId], held.companyId).catch((e) =>
+          ctx.logger.warn("Couldn't remove a queue blocker", { issueId: held.issueId, error: e instanceof Error ? e.message : String(e) }));
+      }
       delete holds[held.issueId];
       changed = true;
       await ctx.activity.log({ companyId: held.companyId, message: `Model capacity: left the ${held.poolId} queue (${reason})`, entityType: "issue", entityId: held.issueId, metadata: { poolId: held.poolId } });

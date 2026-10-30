@@ -147,11 +147,13 @@ describe("manual changes win (C5, C7)", () => {
     expect(harness.activity.map((a) => a.message)).toEqual(["Model capacity: left the gpu queue (queue blocker removed by a person)"]);
   });
 
-  it("drops a hold whose task closed", async () => {
-    const { exec, store, snap } = setup();
+  it("drops a hold whose task left the pool, and takes our blocker off it", async () => {
+    const { ctx, exec, store, snap } = setup();
     await exec.execute([holdAction("t1")], snap);
+    const blockerId = (await store.queueBlockers("c1").get()).gpu;
     await exec.reconcileHolds({ ...snap, tasks: snap.tasks.filter((t) => t.issueId !== "t1") });
     expect(await store.holds.get()).toEqual({});
+    expect((await ctx.issues.relations.get("t1", "c1")).blockedBy.map((b) => b.id)).not.toContain(blockerId);
   });
 
   it("keeps a hold that is still in place", async () => {

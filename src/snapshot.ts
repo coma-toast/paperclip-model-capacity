@@ -128,6 +128,9 @@ export interface SnapshotDeps {
   now?: Date;
 }
 
+// Agent statuses Paperclip won't start a run for.
+export const NOT_RUNNABLE_AGENT: ReadonlySet<string> = new Set(["paused", "pausing", "terminated", "pending_approval"]);
+
 export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanies, backendsFor, now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [hosts, holds, released, overrides, exemptions] = await Promise.all([
     store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
@@ -182,7 +185,9 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   const tasks: OpenTask[] = [];
   for (const issue of issuesById.values()) {
     const agent = issue.assigneeAgentId ? agentsByCompany.get(issue.companyId)?.get(issue.assigneeAgentId) : undefined;
-    if (!agent) continue;
+    // A paused or stopped agent can't be woken, so its tasks neither queue nor take a slot: holding them would only
+    // release, fail to start and hold again every cycle.
+    if (!agent || NOT_RUNNABLE_AGENT.has(String(agent.status))) continue;
     const pool = poolOf(issue.companyId, effectiveModel(issue, agent));
     if (!pool) continue;
     tasks.push({
