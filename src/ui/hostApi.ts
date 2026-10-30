@@ -91,3 +91,7 @@ export const connectionKeyBinding = async (companyId: string, grantId: string): 
   const hit = (Array.isArray(list) ? list : list.secrets ?? []).find((s) => s.name === `ai-${grantId}`);
   return hit ? { type: "secret_ref", secretId: hit.id, version: "latest" } : undefined;
 };
+
+// Points an agent at a model. The host merges adapterConfig, so only the model changes.
+export const setAgentModel = (agentId: string, model: string) =>
+  call(`/agents/${encodeURIComponent(agentId)}`, { method: "PATCH", body: JSON.stringify({ adapterConfig: { model } }) });

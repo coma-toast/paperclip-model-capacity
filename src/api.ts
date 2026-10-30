@@ -178,6 +178,38 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     return { uses: collectAgentModels(agents) };
   });
 
+  // Agents with their models, for picking which agents use a pool.
+  const listAgents = async (companyId: string) => {
+    const agents: Agent[] = [];
+    for (let offset = 0; ; offset += 200) {
+      const page = await ctx.agents.list({ companyId, limit: 200, offset });
+      agents.push(...page);
+      if (page.length < 200) break;
+    }
+    return agents.filter((a) => a.status !== "terminated");
+  };
+  const agentModelOf = (a: Agent) => {
+    const model = (a.adapterConfig as Record<string, unknown> | null)?.model;
+    return typeof model === "string" && model ? model : undefined;
+  };
+
+  ctx.data.register("agents", async (params) => {
+    const companyId = companyOf(params);
+    if (!companyId) return { agents: [] };
+    return { agents: (await listAgents(companyId)).map((a) => ({ id: a.id, name: a.name, model: agentModelOf(a) })).sort((a, b) => a.name.localeCompare(b.name)) };
+  });
+
+  // One agent's pool, for the agent page's Model capacity tab: its model and the pools it can be put on.
+  ctx.data.register("agent-pool", async (params) => {
+    const companyId = companyOf(params);
+    const agentId = text(params.agentId);
+    if (!companyId || !agentId) return { pools: [] };
+    const agent = await ctx.agents.get(agentId, companyId);
+    const model = agent ? agentModelOf(agent) : undefined;
+    const pools = (await store.companyPools(companyId).get()).filter((p) => p.agentModel).map((p) => ({ id: p.id, name: p.name, agentModel: p.agentModel!, disabled: p.disabled === true }));
+    return { name: agent?.name, model, pools, currentPoolId: pools.find((p) => p.agentModel === model)?.id };
+  });
+
   // The settings page edits one company's pools, with their own ids (not the scheduler's keys).
   ctx.data.register("pools-config", async (params) => {
     const companyId = companyOf(params);
