@@ -113,6 +113,11 @@ describe("exemptions (B5)", () => {
 describe("hosts (B3, E3)", () => {
   const gpu = pool("gpu", { limit: 4, hosts: [host("h1", { declaredSlots: 2 }), host("h2", { declaredSlots: 2 })] });
 
+  it("a pool matching its engines takes their live slots instead of its limit", () => {
+    expect(availableCapacity({ ...gpu, limitFromEngines: true }, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(10);
+    expect(availableCapacity({ ...gpu, limitFromEngines: true }, snapshot({ hosts: { h1: upHost("h1"), h2: downHost("h2") } }), 0)).toBe(2);
+  });
+
   it("uses probed slots over declared, capped by the limit", () => {
     expect(availableCapacity(gpu, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(4);
     expect(availableCapacity({ ...gpu, limit: 10 }, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(10);

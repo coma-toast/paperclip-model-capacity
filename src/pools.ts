@@ -26,9 +26,11 @@ export const resolvePool = (pool: PoolConfig, backends: Backend[]): PoolConfig =
   const b = pool.backend ? backends.find((x) => x.id === pool.backend) : undefined;
   if (!b) return pool;
   const watched = (pool.watch ?? []).map((id) => backends.find((x) => x.id === id)).filter((x): x is Backend => Boolean(x));
+  const hosts = [...backendHost(b), ...watched.flatMap(backendHost)];
   return {
-    ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { baseUrl: backendBaseUrl(b), backendId: b.id, slots: b.slots },
-    hosts: [...backendHost(b), ...watched.flatMap(backendHost)],
+    ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { baseUrl: backendBaseUrl(b), backendId: b.id, slots: b.slots }, hosts,
+    // Changing a backend's slots changes the limit of every pool that matches its engines.
+    ...(pool.limitFromEngines && hosts.length ? { limit: hosts.reduce((n, h) => n + h.declaredSlots, 0) } : {}),
   };
 };
 
