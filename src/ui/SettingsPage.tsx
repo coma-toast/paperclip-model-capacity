@@ -10,12 +10,12 @@ import type { InspectResult } from "../probes/inspect.js";
 import { patternMatches } from "../scheduler/match.js";
 import type { PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
-import { connectionKeyBinding, createCompanySecret, listAiConnections, readPluginConfig, savePluginConfig, type AiConnection, type SecretBinding } from "./hostApi.js";
+import { connectionKeyBinding, createCompanySecret, listAiConnections, readPluginConfig, savePluginConfig, setAgentModel, type AiConnection, type SecretBinding } from "./hostApi.js";
 
 type FieldError = { field: string; message: string };
 type Result = { ok: boolean; error?: string; errors?: FieldError[] };
 
-const PLACED = /^pools\[\d+\]\.(name|id|backend|watch|sticky|reassignAfterMinutes|limit|alertAfterMinutes|patterns|mode|privacy)$/;
+const PLACED = /^pools\[\d+\]\.(name|id|backend|watch|sticky|reassignAfterMinutes|agentModel|limit|alertAfterMinutes|patterns|mode|privacy)$/;
 
 const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
 
@@ -526,8 +526,59 @@ const StickySection = ({ pool, engines, error, onChange }: {
   );
 };
 
-const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFor, onChange, onRemove }: {
-  pool: PoolConfig; companyId: string; backends: BackendSummary[]; uses: AgentModelUse[]; otherPools: PoolConfig[]; index: number;
+interface AgentBrief { id: string; name: string; model?: string }
+
+// Agents use a pool instead of a specific model by pointing at its agent model (for a pinning pool, an entry model such
+// as a gateway alias, so the pool picks each task's engine). Adding an agent here changes its model.
+const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }: {
+  pool: PoolConfig; saved: boolean; agents: AgentBrief[]; error?: string; onChange: (p: Partial<PoolConfig>) => void; onAgentsChanged: () => void;
+}) => {
+  const toast = usePluginToast();
+  const [busy, setBusy] = useState(false);
+  const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
+  const pinned = new Set((pool.sticky ?? []).map((t) => t.model));
+  const on = pool.agentModel ? agents.filter((a) => a.model === pool.agentModel) : [];
+  const add = async (agentId: string) => {
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent || !pool.agentModel) return;
+    setBusy(true);
+    try {
+      await setAgentModel(agent.id, pool.agentModel);
+      toast({ title: `${agent.name} now uses ${pool.name} (model ${pool.agentModel})`, tone: "success" });
+      onAgentsChanged();
+    } catch (e) {
+      toast({ title: `Couldn't change ${agent.name}'s model: ${e instanceof Error ? e.message : String(e)}`, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <SectionTitle title="Agents on this pool" hint="Agents use the pool instead of a specific model by pointing at its agent model." />
+      <Field label="Agent model" hint={pool.sticky ? "Pick a model left as \"Any engine\" so the pool chooses each task's engine; it must also work on its own." : "The model agents on this pool use."} error={error}>
+        <select style={inputStyle} value={pool.agentModel ?? ""} onChange={(e) => onChange({ agentModel: e.target.value || undefined })}>
+          <option value="">None</option>
+          {models.map((m) => <option key={m} value={m}>{m}{pinned.has(m) ? " (tied to an engine)" : ""}</option>)}
+        </select>
+      </Field>
+      {pool.agentModel ? (
+        <>
+          <span style={{ fontSize: 13 }}>{on.length ? on.map((a) => a.name).join(", ") : <span style={MUTED}>No agents use it yet.</span>}</span>
+          {saved ? (
+            <select style={inputStyle} value="" disabled={busy} onChange={(e) => void add(e.target.value)}>
+              <option value="">Add an agent…</option>
+              {agents.filter((a) => a.model !== pool.agentModel).map((a) => <option key={a.id} value={a.id}>{a.name}{a.model ? ` (now ${a.model})` : ""}</option>)}
+            </select>
+          ) : <span style={MUTED}>Save the pool before adding agents.</span>}
+        </>
+      ) : null}
+    </div>
+  );
+};
+
+const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChanged, otherPools, index, errorsFor, onChange, onRemove }: {
+  pool: PoolConfig; companyId: string; backends: BackendSummary[]; uses: AgentModelUse[]; agents: AgentBrief[]; saved: boolean; onAgentsChanged: () => void;
+  otherPools: PoolConfig[]; index: number;
   errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
@@ -608,6 +659,9 @@ const PoolCard = ({ pool, companyId, backends, uses, otherPools, index, errorsFo
       {backend && info!.group === "gateway" && locals.length && pool.patterns.filter((m) => m.trim()).length ? (
         <StickySection pool={pool} engines={locals} error={err("sticky") ?? err("reassignAfterMinutes")} onChange={onChange} />
       ) : null}
+      {pool.patterns.some((m) => m.trim()) ? (
+        <AgentsSection pool={pool} saved={saved} agents={agents} error={err("agentModel")} onChange={onChange} onAgentsChanged={onAgentsChanged} />
+      ) : null}
 
       <div style={{ display: "grid", gap: 6 }}>
         <SectionTitle title="Models in this pool" hint="Tick the models this pool covers. A task counts here when its model is one of them. This changes nothing in the backend." />
@@ -637,6 +691,7 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   const companyId = context.companyId;
   const config = usePluginData<{ pools: PoolConfig[]; backends: BackendSummary[] }>("pools-config", { companyId });
   const agentModels = usePluginData<{ uses: AgentModelUse[] }>("agent-models", { companyId });
+  const agentList = usePluginData<{ agents: AgentBrief[] }>("agents", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
@@ -703,7 +758,9 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
       ) : null}
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Start one from your agents' models above, or add one.</span> : null}
       {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} backends={backends} uses={agentModels.data?.uses ?? []} otherPools={pools.filter((_, j) => j !== i)} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
+        <PoolCard key={i} pool={p} companyId={companyId} backends={backends} uses={agentModels.data?.uses ?? []}
+          agents={agentList.data?.agents ?? []} saved={JSON.parse(saved).some((q: PoolConfig) => q.id === p.id && q.agentModel === p.agentModel)}
+          onAgentsChanged={() => { agentList.refresh(); agentModels.refresh(); }} otherPools={pools.filter((_, j) => j !== i)} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
       ))}
       {actions}
     </div>

@@ -67,6 +67,9 @@ export interface PoolConfig {
   sticky?: StickyTarget[];
   // A plugin-placed task whose engine has been down this long may move to another engine (default 30).
   reassignAfterMinutes?: number;
+  // The model agents point at to use this pool instead of a specific model (one of the pool's models; for a sticky
+  // pool, an entry model, so the pool picks the engine). It must work on its own too, for runs that have no task.
+  agentModel?: string;
   // Derived from sticky with the engines' scoped host ids (not saved).
   placement?: { model: string; hostId: string }[];
   privacy: PoolPrivacy;

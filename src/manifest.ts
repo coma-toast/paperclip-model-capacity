@@ -33,6 +33,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.migrate",
     "ui.dashboardWidget.register",
     "ui.page.register",
+    "ui.detailTab.register",
     "instance.settings.register",
   ],
   entrypoints: {
@@ -60,6 +61,7 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "dashboardWidget", id: "capacity-widget", displayName: "Model capacity", exportName: "DashboardWidget" },
       { type: "page", id: "capacity-page", displayName: "Model capacity", exportName: "CapacityPage", routePath: "model-capacity" },
       { type: "companySettingsPage", id: "capacity-settings", displayName: "Model capacity", exportName: "SettingsPage", routePath: "model-capacity" },
+      { type: "detailTab", id: "agent-pool", displayName: "Model capacity", exportName: "AgentPoolTab", entityTypes: ["agent"] },
     ],
   },
 };
