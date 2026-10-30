@@ -5,6 +5,7 @@ import { APIS, addPrefix, apiInfo, inferApi, type ApiKind } from "./apis.js";
 import { backendBaseUrl, backendPrefix, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
 import { PRIORITY_RANK } from "./constants.js";
 import { harnessConfig } from "./harness.js";
+import { fetchProxyRoutes } from "./routes.js";
 import { listBackendModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
@@ -313,6 +314,22 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     if (!companyId) return { ok: false, error: "Open this from a company's dashboard" };
     await runtime.sampleCompany(companyId);
     return { ok: true };
+  });
+
+  // Where a proxy backend sends each of its models, matched to the company's local engines (for checking which
+  // engines a pool should watch or pin tasks to).
+  ctx.actions.register("proxy-routes", async (params, context) => {
+    if (!forUser(context)) return { ok: false, error: "Only board users can read routing" };
+    const companyId = companyFor(params, context);
+    if (!companyId) return { ok: false, error: "Open this from a company's settings" };
+    const backend = await savedBackend(companyId, params.backendId);
+    if (!backend) return { ok: false, error: "No such backend" };
+    const engines = readBackends(await ctx.config.get(companyId)).filter((b) => apiInfo(b.type).group === "local");
+    try {
+      return await fetchProxyRoutes(ctx, backend, engines, await runtime.backendAuth.headersFor(companyId, backend.id));
+    } catch (e) {
+      return { ok: false, error: `Couldn't read ${backend.name}'s key: ${errText(e)}` };
+    }
   });
 
   ctx.actions.register("inspect-backend", async (params, context) => {
