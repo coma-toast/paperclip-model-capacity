@@ -1,5 +1,5 @@
 import { OPEN_TASK_STATUSES, PRIORITY_RANK } from "../constants.js";
-import type { Action, HeldTask, OpenTask, PoolConfig, Snapshot, TaskPriority } from "../types.js";
+import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
 interface Group {
   key: string;
@@ -74,7 +74,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
   // B2: running and queued runs, plus released tasks whose run hasn't shown up yet. A run queued behind its own agent
   // doesn't hold a model slot.
   for (const run of snapshot.runs) {
-    if (run.waitingOnAgent) continue;
+    if (!occupiesSlot(run)) continue;
     const group = groupFor(run.poolId, run.companyId);
     if (!group) continue;
     bump(counts, group.key);

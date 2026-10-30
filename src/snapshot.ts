@@ -1,6 +1,6 @@
 import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
-import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK } from "./constants.js";
+import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK, STALLED_QUEUED_MS } from "./constants.js";
 import { loadHeldPoolKeys, loadScopedPools, type BackendsFor } from "./pools.js";
 import { matchPool } from "./scheduler/match.js";
 import { agentModel, effectiveModel, isPinned } from "./scheduler/model.js";
@@ -20,6 +20,7 @@ export interface RunRow {
   issue_id: string | null;
   status: string;
   started_at: string | Date | null;
+  created_at?: string | Date | null;
 }
 
 // Returns undefined when the core table can't be read, so the builder falls back to Issue.activeRun.
@@ -27,7 +28,7 @@ export type RunReader = () => Promise<RunRow[] | undefined>;
 
 // Needs `database.coreReadTables: ["heartbeat_runs"]` (spike check 4). Older runs keep the issue only in context_snapshot.
 export const RUNS_SQL =
-  "SELECT id, company_id, agent_id, COALESCE(issue_id::text, context_snapshot->>'issueId') AS issue_id, status, started_at " +
+  "SELECT id, company_id, agent_id, COALESCE(issue_id::text, context_snapshot->>'issueId') AS issue_id, status, started_at, created_at " +
   "FROM public.heartbeat_runs WHERE status IN ('queued', 'running')";
 
 export const dbRunReader = (ctx: PluginContext): RunReader => async () => {
@@ -202,7 +203,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     const model = issue ? effectiveModel(issue, agent) : agentModel(agent);
     runs.push({
       runId: row.id, issueId: row.issue_id ?? "", agentId: row.agent_id, companyId: row.company_id,
-      poolId: poolOf(row.company_id, model)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at),
+      poolId: poolOf(row.company_id, model)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at), queuedAt: toIso(row.created_at),
       agentName: agent.name, issueIdentifier: issue?.identifier ?? undefined,
     });
   }
@@ -210,7 +211,11 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
   // Paperclip runs one run per agent at a time (by default), so a queued run whose agent is already running waits for
   // the agent, not for the engine.
   const busyAgents = new Set(runs.filter((r) => r.status === "running").map((r) => `${r.companyId}:${r.agentId}`));
-  for (const run of runs) if (run.status === "queued" && busyAgents.has(`${run.companyId}:${run.agentId}`)) run.waitingOnAgent = true;
+  for (const run of runs) {
+    if (run.status !== "queued") continue;
+    if (busyAgents.has(`${run.companyId}:${run.agentId}`)) run.waitingOnAgent = true;
+    else if (run.queuedAt && now.getTime() - Date.parse(run.queuedAt) > STALLED_QUEUED_MS) run.stalled = true;
+  }
 
   const runIssues = new Set(runs.map((r) => r.issueId).filter(Boolean));
   const tasks: OpenTask[] = [];
