@@ -193,3 +193,40 @@ describe("wake confirmation (C3)", () => {
     expect(await store.released.get()).toEqual({});
   });
 });
+
+describe("placement (P2.6)", () => {
+  const placeAction = (issueId: string, model: string): Action => ({ kind: "place", issueId, companyId: "c1", poolId: "c1:gpu", model, reason: "new" });
+  const setupSticky = () => {
+    const harness = createTestHarness({ manifest, capabilities: CAPS });
+    harness.seed({ issues: [issue("t1", { assigneeAdapterOverrides: { useProjectWorkspace: true } } as Partial<Issue>), issue("t2")] });
+    const store = createStore(harness.ctx.state);
+    const exec = createExecutor({ ctx: harness.ctx, store, queueLabelId: async () => undefined, now: new Date(NOW) });
+    const snap: Snapshot = snapshot({ pools: [pool("c1:gpu", { mode: "enforce" })], tasks: [task("t1", { poolId: "c1:gpu" }), task("t2", { poolId: "c1:gpu" })] });
+    return { ctx: harness.ctx, store, exec, snap };
+  };
+
+  it("sets the task's model override, keeps its other override keys, and records it as the plugin's", async () => {
+    const { ctx, store, exec, snap } = setupSticky();
+    await exec.execute([placeAction("t1", "l/mbp")], snap);
+    expect((await ctx.issues.get("t1", "c1"))?.assigneeAdapterOverrides).toEqual({ useProjectWorkspace: true, adapterConfig: { model: "l/mbp" } });
+    expect((await store.overrides.get()).t1).toMatchObject({ model: "l/mbp", original: { useProjectWorkspace: true }, fromPoolId: "c1:gpu", toPoolId: "c1:gpu" });
+  });
+
+  it("undoes a placement once the task is done, but not while it's still open", async () => {
+    const { ctx, store, exec, snap } = setupSticky();
+    await exec.execute([placeAction("t1", "l/mbp")], snap);
+    await exec.clearPlacements({ ...snap, tasks: [] });
+    expect(Object.keys(await store.overrides.get())).toEqual(["t1"]);
+    await ctx.issues.update("t1", { status: "done" }, "c1");
+    await exec.clearPlacements({ ...snap, tasks: [] });
+    expect(await store.overrides.get()).toEqual({});
+    expect((await ctx.issues.get("t1", "c1"))?.assigneeAdapterOverrides).toEqual({ useProjectWorkspace: true });
+  });
+
+  it("only records a placement in observe mode", async () => {
+    const { ctx, store, exec, snap } = setupSticky();
+    await exec.execute([placeAction("t2", "l/vm")], { ...snap, pools: [pool("c1:gpu", { mode: "observe" })] });
+    expect((await ctx.issues.get("t2", "c1"))?.assigneeAdapterOverrides ?? null).toBeNull();
+    expect(await store.overrides.get()).toEqual({});
+  });
+});

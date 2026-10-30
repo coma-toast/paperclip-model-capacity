@@ -65,6 +65,16 @@ describe("validatePools (A7, A9, A10)", () => {
   });
 });
 
+describe("sticky pool settings (P2.6)", () => {
+  const base = { id: "local", name: "Local", backend: "proxy", patterns: ["l/local", "l/mbp"], limit: 4, privacy: "private" };
+  it("accepts engines for the pool's own models and rejects the rest", () => {
+    expect(validatePools([{ ...base, sticky: [{ model: "l/mbp", engine: "mac" }], reassignAfterMinutes: 20 }])).toMatchObject({ ok: true });
+    expect(validatePools([{ ...base, sticky: [{ model: "l/other", engine: "mac" }] }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].sticky" }] });
+    expect(validatePools([{ ...base, sticky: [{ model: "l/mbp", engine: "mac" }, { model: "l/mbp", engine: "gpu" }] }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].sticky" }] });
+    expect(validatePools([{ ...base, reassignAfterMinutes: 0 }])).toMatchObject({ ok: false, errors: [{ field: "pools[0].reassignAfterMinutes" }] });
+  });
+});
+
 describe("board actions and data handlers", () => {
   const runtimes: Runtime[] = [];
   afterEach(async () => {

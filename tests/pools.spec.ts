@@ -36,4 +36,10 @@ describe("resolvePool", () => {
     expect(resolvePool(pool({ backend: "proxy", watch: ["gpu", "mac"], limit: 2 }), backends).limit).toBe(2);
     expect(resolvePool(pool({ backend: "proxy", limit: 2, limitFromEngines: true }), backends).limit).toBe(2);
   });
+
+  it("resolves a sticky pool's engines to hosts it also watches", () => {
+    const r = resolvePool(pool({ backend: "proxy", patterns: ["litellm/local", "litellm/mbp", "litellm/vm"], sticky: [{ model: "litellm/mbp", engine: "mac" }, { model: "litellm/vm", engine: "gpu" }] }), backends);
+    expect(r.placement).toEqual([{ model: "litellm/mbp", hostId: "backend~mac" }, { model: "litellm/vm", hostId: "backend~gpu" }]);
+    expect(r.hosts.map((h) => h.id)).toEqual(["backend~mac", "backend~gpu"]);
+  });
 });

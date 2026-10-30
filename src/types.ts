@@ -61,6 +61,14 @@ export interface PoolConfig {
   // Disabled (e.g. before shutting an engine down): nothing new is released and new work waits, while runs already
   // going finish. Unlike an operator hold, it's part of the saved settings.
   disabled?: boolean;
+  // Keep each task on one engine for its prompt cache (P2.6). Each entry is a model that reaches exactly one engine
+  // (a backend id); the order is the preference. Pool models not listed are entry models: a task on one is placed
+  // (its model override set) on the first listed engine with room, and stays there; its subtasks follow it.
+  sticky?: StickyTarget[];
+  // A plugin-placed task whose engine has been down this long may move to another engine (default 30).
+  reassignAfterMinutes?: number;
+  // Derived from sticky with the engines' scoped host ids (not saved).
+  placement?: { model: string; hostId: string }[];
   privacy: PoolPrivacy;
   mode: PoolMode;
   scope: PoolScope;
@@ -85,6 +93,11 @@ export interface HostStatus {
   lastProbeAt?: string;
   lastChangeAt?: string;
   error?: string;
+}
+
+export interface StickyTarget {
+  model: string;
+  engine: string;
 }
 
 export interface HeldTask {
@@ -124,6 +137,8 @@ export interface ReleasedTask {
   companyId: string;
   poolId: string;
   runId?: string;
+  // Sticky pools: the model (engine) it was released onto, so it counts against that engine until its run starts.
+  model?: string;
   releasedAt: string;
   // The wake is retried once if no run shows up (C3).
   wakeRetried?: boolean;
@@ -139,6 +154,9 @@ export interface OpenTask {
   hasActiveRun: boolean;
   exempt: boolean;
   pinned: boolean;
+  // The model a run would use now (the task's override, else its agent's model), and the parent task.
+  model?: string;
+  parentId?: string;
 }
 
 // An override the plugin wrote during overflow, kept so it can be restored exactly (D3) and told apart from a pin (D4).
@@ -162,6 +180,8 @@ export interface Snapshot {
   released: ReleasedTask[];
   // Pools an operator put on hold (F2): nothing new is released.
   heldPools: string[];
+  // Models the plugin placed tasks on (sticky pools), by issue id, so subtasks of a closed parent still follow it.
+  placements?: Record<string, string>;
   // Agents an operator exempted (F4): their tasks never wait but still count (B5). Task exemptions are on OpenTask.
   exemptAgentIds?: string[];
   // How the snapshot was built, for the operator (not used by decide()).
@@ -196,9 +216,13 @@ export interface AlertEvent {
   companyId?: string;
 }
 
+// Why a task was put on an engine: first placement, its parent's engine, or its own engine was down too long.
+export type PlaceReason = "new" | "parent" | "engineDown";
+
 export type Action =
   | { kind: "hold"; issueId: string; companyId: string; poolId: string; position: number }
-  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual" }
+  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual"; model?: string }
+  | { kind: "place"; issueId: string; companyId: string; poolId: string; model: string; reason: PlaceReason }
   | { kind: "overflow"; issueId: string; companyId: string; fromPoolId: string; toPoolId: string; model: string; reason: OverflowReason }
   | { kind: "restore"; issueId: string; companyId: string; original: IssueAssigneeAdapterOverrides | null }
   | { kind: "alert"; alert: AlertEvent };

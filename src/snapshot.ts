@@ -225,7 +225,8 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     // A paused or stopped agent can't be woken, so its tasks neither queue nor take a slot: holding them would only
     // release, fail to start and hold again every cycle.
     if (!agent || NOT_RUNNABLE_AGENT.has(String(agent.status))) continue;
-    const pool = poolOf(issue.companyId, effectiveModel(issue, agent));
+    const model = effectiveModel(issue, agent);
+    const pool = poolOf(issue.companyId, model);
     if (!pool) continue;
     // A task waiting on its own unfinished blockers can't run, so it neither queues nor takes a slot. Our queue blocker
     // doesn't count.
@@ -237,12 +238,15 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     tasks.push({
       issueId: issue.id, companyId: issue.companyId, agentId: agent.id, poolId: pool.id, priority: toPriority(issue.priority),
       status: issue.status, hasActiveRun: runIssues.has(issue.id), exempt: exemptIssues.has(issue.id), pinned: isPinned(issue, overrides),
+      model, ...(issue.parentId ? { parentId: issue.parentId } : {}),
     });
   }
 
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),
     heldPools, exemptAgentIds: exemptions.agentIds,
+    // Placements are the plugin's own overrides within one pool (overflow ones move a task between pools).
+    placements: Object.fromEntries(Object.values(overrides).filter((o) => o.fromPoolId === o.toPoolId).map((o) => [o.issueId, o.model])),
     diagnostics: {
       runSource: dbRows ? "heartbeat_runs" : "activeRun", activeRunRows: rows.filter((r) => ACTIVE.has(r.status)).length,
       unmatchedRunModels: [...new Set(runs.filter((r) => !r.poolId).map((r) => r.model ?? "(none)"))].slice(0, 20),
