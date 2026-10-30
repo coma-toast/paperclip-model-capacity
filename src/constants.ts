@@ -3,6 +3,11 @@ import type { TaskPriority } from "./types.js";
 // The manifest id; the UI finds the plugin's install id by it.
 export const PLUGIN_KEY = "coma-toast.paperclip-model-capacity";
 
+// Every pool also answers to a virtual model, "pool/<pool id>": an agent pointed at it uses the pool instead of a
+// specific model, and a pinning pool sets each task to a real engine's model before it runs.
+export const VIRTUAL_MODEL_PREFIX = "pool/";
+export const virtualModel = (poolId: string) => `${VIRTUAL_MODEL_PREFIX}${poolId}`;
+
 export const STATE_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PROBE_INTERVAL_MS = 30_000;

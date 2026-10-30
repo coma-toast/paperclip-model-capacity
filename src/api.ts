@@ -4,6 +4,7 @@ import { collectAgentModels } from "./agentModels.js";
 import { APIS, apiInfo, inferApi, type ApiKind } from "./apis.js";
 import { backendBaseUrl, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
 import { PRIORITY_RANK } from "./constants.js";
+import { harnessConfig } from "./harness.js";
 import { listBackendModels } from "./models.js";
 import { loadHeldPoolKeys, loadScopedPools, poolKey, splitPoolKey } from "./pools.js";
 import { inspectHost, type InspectResult } from "./probes/inspect.js";
@@ -192,6 +193,13 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const model = (a.adapterConfig as Record<string, unknown> | null)?.model;
     return typeof model === "string" && model ? model : undefined;
   };
+
+  // The OpenCode provider that makes pinning pools' virtual models work even before a task is placed.
+  ctx.data.register("harness-config", async (params) => {
+    const companyId = companyOf(params);
+    if (!companyId) return { provider: {}, warnings: [] };
+    return harnessConfig(await store.companyPools(companyId).get(), await runtime.backendsFor(companyId));
+  });
 
   ctx.data.register("agents", async (params) => {
     const companyId = companyOf(params);

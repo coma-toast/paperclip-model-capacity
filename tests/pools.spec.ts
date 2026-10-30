@@ -21,6 +21,7 @@ describe("loadScopedPools", () => {
       return [{ id: "proxy", name: "Proxy", type: "litellm", baseUrl: "https://p" }];
     });
     expect(asked).toEqual(["with"]);
+    expect(pools.find((p) => p.id === "with:p")?.patterns).toEqual(["litellm/a", "pool/p"]);
     expect(pools.map((p) => [p.id, p.api])).toEqual([["with:p", "litellm"], ["legacy:p", "litellm"]]);
   });
 });
