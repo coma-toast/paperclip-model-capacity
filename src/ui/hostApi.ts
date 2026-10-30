@@ -1,7 +1,8 @@
-// The plugin's UI runs inside Paperclip's own page (loaded from /_plugins/<pluginId>/ui/…), so it can call Paperclip's
-// API as the signed-in board user. The backend form uses this to store a key as a company secret and save the backend
-// list in the plugin's company config in one step: the worker can only read secrets, never create them.
-const pluginId = () => decodeURIComponent(new URL(import.meta.url).pathname.split("/")[2] ?? "");
+import { PLUGIN_KEY } from "../constants.js";
+
+// The plugin's UI runs inside Paperclip's own page, so it can call Paperclip's API as the signed-in board user. The
+// backend form uses this to store a key as a company secret and save the backend list in the plugin's company config
+// in one step: the worker can only read secrets, never create them.
 
 const call = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(`/api${path}`, { credentials: "include", ...init, headers: { "content-type": "application/json", ...init?.headers } });
@@ -18,15 +19,29 @@ const call = async <T>(path: string, init?: RequestInit): Promise<T> => {
   return (body ? JSON.parse(body) : null) as T;
 };
 
+// The config API wants the install id. The host loads this bundle from a blob: URL, so the id can't be read from
+// import.meta.url; it's looked up once by the manifest key.
+let installId: Promise<string> | undefined;
+const pluginId = () => (installId ??= call<{ id: string; pluginKey: string }[]>("/plugins")
+  .then((list) => {
+    const hit = list.find((p) => p.pluginKey === PLUGIN_KEY);
+    if (!hit) throw new Error(`Plugin ${PLUGIN_KEY} isn't installed`);
+    return hit.id;
+  })
+  .catch((e: unknown) => {
+    installId = undefined;
+    throw e;
+  }));
+
 export type SecretBinding = { type: "secret_ref"; secretId: string; version?: number | "latest" };
 
 export const readPluginConfig = async (companyId: string): Promise<Record<string, unknown>> => {
-  const row = await call<{ configJson?: Record<string, unknown> } | null>(`/plugins/${encodeURIComponent(pluginId())}/config?companyId=${encodeURIComponent(companyId)}`);
+  const row = await call<{ configJson?: Record<string, unknown> } | null>(`/plugins/${encodeURIComponent(await pluginId())}/config?companyId=${encodeURIComponent(companyId)}`);
   return row?.configJson ?? {};
 };
 
-export const savePluginConfig = (companyId: string, configJson: Record<string, unknown>) =>
-  call(`/plugins/${encodeURIComponent(pluginId())}/config`, { method: "POST", body: JSON.stringify({ companyId, configJson }) });
+export const savePluginConfig = async (companyId: string, configJson: Record<string, unknown>) =>
+  call(`/plugins/${encodeURIComponent(await pluginId())}/config`, { method: "POST", body: JSON.stringify({ companyId, configJson }) });
 
 export const createCompanySecret = async (companyId: string, name: string, value: string): Promise<SecretBinding> => {
   const created = await call<{ id: string }>(`/companies/${encodeURIComponent(companyId)}/secrets`, { method: "POST", body: JSON.stringify({ name, value }) });

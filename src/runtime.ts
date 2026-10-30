@@ -192,7 +192,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
 
   const health = () => ({ lastCycleAt, lastError });
 
-  return { start, stop, cycle, schedule, probeTick, usageTick, sampleCompany, idle, health, store, executor, backendAuth, backendsFor, snapshot: () => lastSnapshot };
+  return { start, stop, cycle, schedule, companies, probeTick, usageTick, sampleCompany, idle, health, store, executor, backendAuth, backendsFor, snapshot: () => lastSnapshot };
 };
 
 export type Runtime = ReturnType<typeof createRuntime>;

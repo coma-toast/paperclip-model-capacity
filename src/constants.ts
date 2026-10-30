@@ -1,5 +1,8 @@
 import type { TaskPriority } from "./types.js";
 
+// The manifest id; the UI finds the plugin's install id by it.
+export const PLUGIN_KEY = "coma-toast.paperclip-model-capacity";
+
 export const STATE_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PROBE_INTERVAL_MS = 30_000;

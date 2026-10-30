@@ -105,12 +105,18 @@ export const createCompanyDirectory = (ctx: PluginContext, store: Store, clock: 
       if (clock() - refreshedAt < COMPANY_REFRESH_MS) return;
       refreshedAt = clock();
       try {
+        // Merged, never replaced: inside one company's event the host lists only that company, and replacing the
+        // saved list with it dropped every other company (their pools stopped being enforced).
         const list = await pageAll((offset) => ctx.companies.list({ limit: PAGE_SIZE, offset }));
-        await store.companies.set(list.map((c) => ({ id: c.id, name: c.name })));
+        const byId = new Map((await store.companies.get()).map((c) => [c.id, c]));
+        for (const c of list) byId.set(c.id, { id: c.id, name: c.name });
+        await store.companies.set([...byId.values()]);
       } catch (e) {
         ctx.logger.warn("companies.list failed inside an event; keeping the saved list", { error: e instanceof Error ? e.message : String(e) });
       }
     },
+    // Records a company known from a board action (e.g. saving its pools).
+    note: (companyId: string) => save([{ id: companyId, name: companyId }]),
     list: async () => ((await store.companies.get()) as unknown as Company[]).filter((c) => (deniedUntil.get(c.id) ?? 0) <= clock()),
     markDenied: (companyIds: string[]) => {
       for (const id of companyIds) deniedUntil.set(id, clock() + DENIED_COMPANY_BACKOFF_MS);

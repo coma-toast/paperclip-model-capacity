@@ -294,6 +294,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     ]);
     if (missing.length) return { ok: false, errors: missing };
     await store.companyPools(companyId).set(result.pools);
+    await runtime.companies.note(companyId);
     return { ok: true };
   });
 
