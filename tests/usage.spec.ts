@@ -67,6 +67,12 @@ describe("sampleUsage", () => {
     expect(r).toMatchObject({ ok: false, meters: [], error: "/key/info returned 401 (check the backend's API key)" });
   });
 
+  it("LiteLLM: explains a key with no spend record (master or config key)", async () => {
+    const f = await fake({ "/key/info": { status: 404, body: { error: { message: "Key not found in database" } } } });
+    const r = await sampleUsage({ id: "p", name: "Proxy", type: "litellm", baseUrl: f.baseUrl }, deps);
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("isn't a LiteLLM virtual key") });
+  });
+
   it("usedShare", () => {
     expect(usedShare({ label: "x", unit: "usd", used: 45, limit: 50 })).toBe(0.9);
     expect(usedShare({ label: "x", unit: "usd", used: 42 })).toBeUndefined();

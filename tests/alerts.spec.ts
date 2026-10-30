@@ -125,6 +125,19 @@ describe("worker integration", () => {
     expect((await bodies()).at(-1)).toBe("✅ Task waiting too long (cleared): Waiting for gpu over 30 min");
   });
 
+  it("clears a plugin-error alert left open from before a restart on the first good cycle", async () => {
+    const harness = createTestHarness({ manifest, capabilities: CAPS });
+    harness.seed({ companies: [company("c1")], issues: [issue("alerts-c1", "c1")] });
+    harness.setConfig({ alertIssueId: "alerts-c1" });
+    const rt = createRuntime(harness.ctx, { probeIntervalMs: 0, readRuns: async () => [] });
+    runtimes.push(rt);
+    await rt.store.companies.set([{ id: "c1", name: "c1" }]);
+    await rt.store.companyPools("c1").set([pool("gpu")]);
+    await rt.store.alerts.set({ active: { "pluginError:cycle": ev("pluginError", "cycle", "start", { message: "A capacity cycle failed" }) }, recent: [] });
+    await rt.cycle("sweep");
+    expect(Object.keys((await rt.store.alerts.get()).active)).toEqual([]);
+  });
+
   it("alerts host down from the probe loop, opens no alert for a first come-up, and never shows the host URL", async () => {
     const harness = createTestHarness({ manifest, capabilities: CAPS });
     harness.seed({ companies: [company("c1")], issues: [issue("alerts-c1", "c1")] });
