@@ -22,6 +22,11 @@ describe("limits", () => {
     expect(decide(snapshot({ tasks: [task("t1")] }))).toEqual([]);
   });
 
+  it("a run queued behind its own agent doesn't take the slot, and its task isn't held", () => {
+    const a = decide(snapshot({ runs: [run("q1", { status: "queued", waitingOnAgent: true })], tasks: [task("q1", { hasActiveRun: true }), task("t1")] }));
+    expect(a).toEqual([]);
+  });
+
   it("limit 1 with one run holds the rest", () => {
     const a = decide(snapshot({ runs: [run("r1")], tasks: [task("r1", { hasActiveRun: true }), task("t1")] }));
     expect(holds(a)).toEqual([["t1", 1]]);

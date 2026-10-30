@@ -82,7 +82,7 @@ const queueOrder = (a: HeldTask, b: HeldTask) =>
 
 export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Date): PoolSummary[] =>
   snapshot.pools.map((pool) => {
-    const runs = snapshot.runs.filter((r) => r.poolId === pool.id).length;
+    const runs = snapshot.runs.filter((r) => r.poolId === pool.id && !r.waitingOnAgent).length;
     const pending = snapshot.released.filter((r) => r.poolId === pool.id && !snapshot.runs.some((x) => x.issueId === r.issueId)).length;
     const holds = snapshot.holds.filter((h) => h.poolId === pool.id);
     const oldest = holds.reduce<string | undefined>((min, h) => (!min || h.heldAt < min ? h.heldAt : min), undefined);

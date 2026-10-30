@@ -207,6 +207,11 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, listCompanie
     });
   }
 
+  // Paperclip runs one run per agent at a time (by default), so a queued run whose agent is already running waits for
+  // the agent, not for the engine.
+  const busyAgents = new Set(runs.filter((r) => r.status === "running").map((r) => `${r.companyId}:${r.agentId}`));
+  for (const run of runs) if (run.status === "queued" && busyAgents.has(`${run.companyId}:${run.agentId}`)) run.waitingOnAgent = true;
+
   const runIssues = new Set(runs.map((r) => r.issueId).filter(Boolean));
   const tasks: OpenTask[] = [];
   const queueBlockerIds = new Map<string, Set<string>>();
