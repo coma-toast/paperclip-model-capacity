@@ -3,14 +3,14 @@ import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCom
 
 import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
-import { APIS, addPrefix, apiInfo, stripPrefix, type ApiKind } from "../apis.js";
+import { APIS, addPrefix, apiInfo, backendFromConnection, stripPrefix, type ApiKind } from "../apis.js";
 import { backendPrefix, type Backend, type BackendSummary } from "../backends.js";
 import type { ListModelsResult } from "../models.js";
 import type { InspectResult } from "../probes/inspect.js";
 import { patternMatches } from "../scheduler/match.js";
 import type { PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
-import { createCompanySecret, readPluginConfig, savePluginConfig } from "./hostApi.js";
+import { connectionKeyBinding, createCompanySecret, listAiConnections, readPluginConfig, savePluginConfig, type AiConnection, type SecretBinding } from "./hostApi.js";
 
 type FieldError = { field: string; message: string };
 type Result = { ok: boolean; error?: string; errors?: FieldError[] };
@@ -138,6 +138,24 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
   const test = usePluginAction("test-backend");
   const [draft, setDraft] = useState<Omit<Backend, "key">>(initial ? (({ hasKey: _h, ...rest }) => rest)(initial) : { id: "", name: "", type: "litellm" });
   const [key, setKey] = useState("");
+  // A key taken from a Paperclip connection: the backend binds the connection's own secret.
+  const [connectionKey, setConnectionKey] = useState<{ name: string; binding: SecretBinding }>();
+  const [connections, setConnections] = useState<AiConnection[]>([]);
+  useEffect(() => {
+    listAiConnections(companyId).then(setConnections).catch(() => setConnections([]));
+  }, [companyId]);
+  const importConnection = async (id: string) => {
+    const c = connections.find((x) => x.id === id);
+    if (!c) return;
+    const target = backendFromConnection(c);
+    if ("reason" in target) return setProblem(`${c.name} is ${target.reason}.`);
+    const binding = c.grantId ? await connectionKeyBinding(companyId, c.grantId).catch(() => undefined) : undefined;
+    if (!binding) return setProblem(`Couldn't find ${c.name}'s key. Enter it below instead.`);
+    setProblem(undefined);
+    setKey("");
+    setConnectionKey({ name: c.name, binding });
+    set({ type: target.type, baseUrl: target.baseUrl, prefix: undefined, name: draft.name.trim() || c.name });
+  };
   const [advanced, setAdvanced] = useState(Boolean(initial?.header || initial?.scheme !== undefined));
   const [result, setResult] = useState<{ models?: ListModelsResult; server?: InspectResult; error?: string } | null>(null);
   const [busy, setBusy] = useState<"" | "test" | "save">("");
@@ -167,7 +185,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       let id = initial?.id ?? slug(name);
       if (!initial) for (let n = 2; current.some((b) => b.id === id); n++) id = `${slug(name)}-${n}`;
       const previous = current.find((b) => b.id === id);
-      const keyBinding = key.trim() ? await createCompanySecret(companyId, `Model capacity: ${name} key (${new Date().toISOString().slice(0, 16)})`, key.trim()) : previous?.key;
+      const keyBinding = key.trim()
+        ? await createCompanySecret(companyId, `Model capacity: ${name} key (${new Date().toISOString().slice(0, 16)})`, key.trim())
+        : connectionKey?.binding ?? previous?.key;
       const backend: Backend = {
         id, name, type: draft.type,
         // Stored explicitly (defaults included) so the host's config form shows them too.
@@ -193,6 +213,17 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
     <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 1000, overflowY: "auto", padding: "48px 16px" }}>
       <div style={{ background: "var(--background, #1c1c1c)", color: "inherit", border: "1px solid rgba(128,128,128,0.45)", borderRadius: 12, padding: 20, width: "min(640px, 100%)", display: "grid", gap: 14 }}>
         <strong style={{ fontSize: 16 }}>{initial ? `Edit ${initial.name}` : "Add a backend"}</strong>
+        {connections.length ? (
+          <Field label="Use a Paperclip connection" hint="Fills in the type and address and uses the connection's own key; nothing is copied.">
+            <select style={inputStyle} value="" onChange={(e) => void importConnection(e.target.value)}>
+              <option value="">Choose a connection…</option>
+              {connections.map((c) => {
+                const target = backendFromConnection(c);
+                return <option key={c.id} value={c.id} disabled={"reason" in target}>{c.name}{"reason" in target ? ` (${target.reason})` : ""}</option>;
+              })}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Type" hint={info.hint}>
           <select style={inputStyle} value={draft.type} onChange={(e) => set({ type: e.target.value as ApiKind, prefix: undefined, baseUrl: undefined })}>
             {(["gateway", "cloud", "local", "names"] as const).map((group) => (
@@ -211,9 +242,18 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
           </Field>
         ) : null}
         {info.group !== "names" ? (
-          <Field label="API key" hint={initial?.hasKey ? "A key is saved. Leave empty to keep it, or enter a new one to replace it." : info.group === "local" ? "Usually not needed for a local engine." : "Stored as a Paperclip company secret; never shown again."}>
-            <input style={inputStyle} type="password" autoComplete="off" value={key} placeholder={initial?.hasKey ? "•••••••• (saved)" : "sk-…"} onChange={(e) => { setKey(e.target.value); setResult(null); }} />
-          </Field>
+          connectionKey ? (
+            <Field label="API key" hint="Test connection runs without it; Check uses it once saved.">
+              <span style={{ fontSize: 13 }}>
+                Uses the key from the <strong>{connectionKey.name}</strong> connection.{" "}
+                <button type="button" onClick={() => setConnectionKey(undefined)} style={{ color: "#3b82f6", cursor: "pointer" }}>Use a different key</button>
+              </span>
+            </Field>
+          ) : (
+            <Field label="API key" hint={initial?.hasKey ? "A key is saved. Leave empty to keep it, or enter a new one to replace it." : info.group === "local" ? "Usually not needed for a local engine." : "Stored as a Paperclip company secret; never shown again."}>
+              <input style={inputStyle} type="password" autoComplete="off" value={key} placeholder={initial?.hasKey ? "•••••••• (saved)" : "sk-…"} onChange={(e) => { setKey(e.target.value); setResult(null); }} />
+            </Field>
+          )
         ) : null}
         <div style={{ display: "grid", gridTemplateColumns: info.group === "local" ? "2fr 1fr" : "1fr", gap: 12 }}>
           <Field label="Model name prefix" hint={`How agents start this backend's model names${info.defaultPrefix ? `; suggested ${info.defaultPrefix}` : ""}. Leave empty for full names.`}>

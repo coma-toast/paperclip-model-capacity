@@ -70,3 +70,24 @@ export interface QuotaAccount {
 
 export const readQuotaWindows = (companyId: string) =>
   call<QuotaAccount[]>(`/companies/${encodeURIComponent(companyId)}/costs/quota-windows`);
+
+export interface AiConnection {
+  id: string;
+  grantId?: string;
+  provider: string;
+  method: string;
+  name: string;
+  status?: string;
+  routing?: { kind?: string; baseUrl?: string } | null;
+}
+
+export const listAiConnections = async (companyId: string) =>
+  (await call<{ connections?: AiConnection[] }>(`/companies/${encodeURIComponent(companyId)}/ai-connections`)).connections ?? [];
+
+// A connection's key is the company secret its grant points at, named "ai-<grantId>"; a backend can bind the same
+// secret, so nothing is copied.
+export const connectionKeyBinding = async (companyId: string, grantId: string): Promise<SecretBinding | undefined> => {
+  const list = await call<{ id: string; name: string }[] | { secrets?: { id: string; name: string }[] }>(`/companies/${encodeURIComponent(companyId)}/secrets`);
+  const hit = (Array.isArray(list) ? list : list.secrets ?? []).find((s) => s.name === `ai-${grantId}`);
+  return hit ? { type: "secret_ref", secretId: hit.id, version: "latest" } : undefined;
+};
