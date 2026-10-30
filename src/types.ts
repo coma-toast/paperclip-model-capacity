@@ -100,9 +100,13 @@ export interface RunningRun {
   model?: string;
   status: "queued" | "running";
   startedAt?: string;
+  // When the run was created (queued).
+  queuedAt?: string;
   // Queued behind its own agent's running run: it waits for the agent, not for a model slot, so it doesn't count
   // against the pool (its task still counts as having a run, so it isn't held twice).
   waitingOnAgent?: boolean;
+  // Queued over STALLED_QUEUED_MS with its agent idle: Paperclip isn't starting it, so it holds no slot either.
+  stalled?: boolean;
   // For display only.
   agentName?: string;
   issueIdentifier?: string;
@@ -192,3 +196,6 @@ export type Action =
   | { kind: "overflow"; issueId: string; companyId: string; fromPoolId: string; toPoolId: string; model: string; reason: OverflowReason }
   | { kind: "restore"; issueId: string; companyId: string; original: IssueAssigneeAdapterOverrides | null }
   | { kind: "alert"; alert: AlertEvent };
+
+// Whether a run takes one of its pool's model slots.
+export const occupiesSlot = (run: Pick<RunningRun, "waitingOnAgent" | "stalled">) => !run.waitingOnAgent && !run.stalled;

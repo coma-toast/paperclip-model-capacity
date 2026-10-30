@@ -10,7 +10,7 @@ import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
 import { validatePools, type FieldError } from "./settings.js";
-import type { Action, AlertEvent, EngineKind, HeldTask, PoolConfig, Snapshot } from "./types.js";
+import { occupiesSlot, type Action, type AlertEvent, type EngineKind, type HeldTask, type PoolConfig, type Snapshot } from "./types.js";
 import type { BackendUsage } from "./usage.js";
 
 export interface PoolSummary {
@@ -82,7 +82,7 @@ const queueOrder = (a: HeldTask, b: HeldTask) =>
 
 export const summarize = (snapshot: Snapshot, openAlertPools: string[], now: Date): PoolSummary[] =>
   snapshot.pools.map((pool) => {
-    const runs = snapshot.runs.filter((r) => r.poolId === pool.id && !r.waitingOnAgent).length;
+    const runs = snapshot.runs.filter((r) => r.poolId === pool.id && occupiesSlot(r)).length;
     const pending = snapshot.released.filter((r) => r.poolId === pool.id && !snapshot.runs.some((x) => x.issueId === r.issueId)).length;
     const holds = snapshot.holds.filter((h) => h.poolId === pool.id);
     const oldest = holds.reduce<string | undefined>((min, h) => (!min || h.heldAt < min ? h.heldAt : min), undefined);

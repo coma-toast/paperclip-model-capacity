@@ -17,6 +17,9 @@ export const PRUNE_CRON = "0 4 * * *";
 export const WAKE_CONFIRM_MS = 30_000;
 // A released task whose run never appears stops counting against the pool after this long.
 export const RELEASE_EXPIRY_MS = 5 * 60_000;
+// A run still queued this long while its agent is idle isn't about to start (e.g. its task is blocked), so it stops
+// counting as a model slot in use.
+export const STALLED_QUEUED_MS = 10 * 60_000;
 export const RUN_EVENT_DEBOUNCE_MS = 2_000;
 export const AGENT_CACHE_TTL_MS = 60_000;
 export const HISTORY_RETENTION_DAYS = 30;

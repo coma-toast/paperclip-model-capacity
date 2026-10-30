@@ -98,6 +98,13 @@ describe("buildSnapshot", () => {
     expect(s.runs.map((r) => [r.runId, r.waitingOnAgent ?? false])).toEqual([["r1", false], ["r2", true], ["r3", false]]);
   });
 
+  it("marks a run queued over 10 minutes with its agent idle as stalled, not a recent one", async () => {
+    const minutesBefore = (m: number) => new Date(Date.parse(NOW) - m * 60_000).toISOString();
+    const { deps } = await setup([{ ...row("old", "c1", "a1", "i1", "queued"), created_at: minutesBefore(30) }, { ...row("new", "c1", "a2", "i4", "queued"), created_at: minutesBefore(2) }]);
+    const s = await buildSnapshot(deps);
+    expect(s.runs.map((r) => [r.runId, r.stalled ?? false])).toEqual([["old", true], ["new", false]]);
+  });
+
   it("marks tasks with a run, the override's pool and pins", async () => {
     const { deps } = await setup();
     const s = await buildSnapshot(deps);
