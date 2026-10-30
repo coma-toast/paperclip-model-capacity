@@ -34,6 +34,7 @@ export const HostDots = ({ hosts }: { hosts: PoolSummary["hosts"] }) =>
 export const PoolBadges = ({ pool }: { pool: PoolSummary }) => (
   <span style={{ display: "inline-flex", gap: 4 }}>
     {pool.mode === "observe" ? <StatusBadge label="observe" status="info" /> : null}
+    {pool.disabled ? <StatusBadge label={pool.inUse ? `disabled · ${pool.inUse} draining` : "disabled · drained"} status={pool.inUse ? "pending" : "info"} /> : null}
     {pool.onHold ? <StatusBadge label="on hold" status="pending" /> : null}
     {pool.openAlerts ? <StatusBadge label={`${pool.openAlerts} alert${pool.openAlerts > 1 ? "s" : ""}`} status="error" /> : null}
   </span>

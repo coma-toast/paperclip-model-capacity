@@ -9,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
@@ -47,6 +47,7 @@ const validateHost = (raw: unknown, at: string, errors: FieldError[]): HostConfi
 // Limits, privacy, mode, alerting and overflow: the same for every pool, with or without a backend.
 const validateCommon = (raw: Record<string, unknown>, at: string, errors: FieldError[]) => {
   if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
+  if (raw.disabled !== undefined && typeof raw.disabled !== "boolean") errors.push({ field: `${at}.disabled`, message: "Must be true or false" });
   if (raw.limitFromEngines !== undefined && typeof raw.limitFromEngines !== "boolean") errors.push({ field: `${at}.limitFromEngines`, message: "Must be true or false" });
   if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
   if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });

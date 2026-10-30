@@ -15,12 +15,12 @@ const buttonBase: CSSProperties = {
   font: "inherit", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap",
 };
 
-export const Button = ({ kind = "secondary", onClick, disabled, children }: { kind?: "primary" | "secondary" | "danger"; onClick: () => void; disabled?: boolean; children: ReactNode }) => {
+export const Button = ({ kind = "secondary", onClick, disabled, title, children }: { kind?: "primary" | "secondary" | "danger"; onClick: () => void; disabled?: boolean; title?: string; children: ReactNode }) => {
   const look: CSSProperties =
     kind === "primary" ? { background: "#2563eb", borderColor: "#2563eb", color: "#fff", fontWeight: 600 }
       : kind === "danger" ? { color: "#ef4444", borderColor: "rgba(239, 68, 68, 0.5)" }
         : {};
-  return <button type="button" disabled={disabled} onClick={onClick} style={{ ...buttonBase, ...look, opacity: disabled ? 0.5 : 1 }}>{children}</button>;
+  return <button type="button" disabled={disabled} title={title} onClick={onClick} style={{ ...buttonBase, ...look, opacity: disabled ? 0.5 : 1 }}>{children}</button>;
 };
 
 export const Card = ({ children }: { children: ReactNode }) => (
