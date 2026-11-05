@@ -4,6 +4,7 @@ import type { FetchFn, ProbeContext, ProbeResult } from "./http.js";
 import { probeLlamaCpp } from "./llamacpp.js";
 import { probeLmStudio } from "./lmstudio.js";
 import { probeOllama } from "./ollama.js";
+import { probeOmlx } from "./omlx.js";
 import { probeOpenAi } from "./openai.js";
 import { probeVllm } from "./vllm.js";
 
@@ -13,6 +14,7 @@ export const PROBES: Readonly<Record<EngineKind, (pc: ProbeContext) => Promise<P
   openai: probeOpenAi,
   vllm: probeVllm,
   lmstudio: probeLmStudio,
+  omlx: probeOmlx,
 };
 
 export const runProbe = async (host: HostConfig, pc: Omit<ProbeContext, "baseUrl">): Promise<ProbeResult> => {

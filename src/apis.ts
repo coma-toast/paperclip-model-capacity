@@ -2,7 +2,7 @@ import type { EngineKind } from "./types.js";
 
 // A pool belongs to one model API, the logical boundary between pools. Agents name a model by the API it goes
 // through, usually with a prefix (e.g. "openrouter/…", "ollama/…"), so each pool keeps that API's prefix.
-export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "direct" | "other";
+export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "copilot" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "direct" | "other";
 
 // gateway: routes to backends the pool can watch. cloud: nothing to watch. local: the endpoint is itself the model
 // server, checked directly. names: only model names, no endpoint.
@@ -18,8 +18,11 @@ export interface ApiInfo {
   // Used when the pool leaves the address empty.
   defaultBaseUrl: string;
   placeholderUrl: string;
-  // How "Load models" lists models: OpenAI-style /v1/models, Ollama's /api/tags, or not at all.
-  listing: "openai" | "ollama" | "none";
+  // How "Load models" lists models: OpenAI-style /v1/models, Ollama's /api/tags, the models.dev catalogue (for
+  // services whose model list needs a login the plugin doesn't have), or not at all.
+  listing: "openai" | "ollama" | "catalog" | "none";
+  // listing "catalog": the service's provider id in the models.dev catalogue.
+  catalog?: string;
   // For local engines: which health check the endpoint gets.
   engine?: EngineKind;
   hint: string;
@@ -29,10 +32,11 @@ export const APIS: readonly ApiInfo[] = [
   { kind: "litellm", label: "LiteLLM proxy", group: "gateway", defaultPrefix: "litellm/", defaultBaseUrl: "", placeholderUrl: "https://litellm.example.com", listing: "openai", hint: "A LiteLLM proxy. It can also watch the backends the proxy routes to." },
   { kind: "openai", label: "OpenAI-compatible endpoint", group: "gateway", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "https://api.example.com/v1", listing: "openai", hint: "Any API that speaks the OpenAI format (/v1/models, /v1/chat/completions)." },
   { kind: "opencode", label: "OpenCode Zen", group: "cloud", defaultPrefix: "opencode/", defaultBaseUrl: "https://opencode.ai/zen/v1", placeholderUrl: "https://opencode.ai/zen/v1", listing: "openai", hint: "OpenCode's hosted models. Cloud: only the limit applies." },
+  { kind: "copilot", label: "GitHub Copilot", group: "cloud", defaultPrefix: "github-copilot/", defaultBaseUrl: "https://api.githubcopilot.com", placeholderUrl: "https://api.githubcopilot.com", listing: "catalog", catalog: "github-copilot", hint: "A Copilot subscription, used by agents through OpenCode's Copilot login. The key is a GitHub token used only to read your premium-request quota; models come from the models.dev catalogue." },
   { kind: "openrouter", label: "OpenRouter", group: "cloud", defaultPrefix: "openrouter/", defaultBaseUrl: "https://openrouter.ai/api/v1", placeholderUrl: "https://openrouter.ai/api/v1", listing: "openai", hint: "OpenRouter's models. Cloud: only the limit applies." },
   { kind: "ollama", label: "Ollama", group: "local", defaultPrefix: "ollama/", defaultBaseUrl: "", placeholderUrl: "http://localhost:11434", listing: "ollama", engine: "ollama", hint: "A local Ollama server, checked directly." },
   { kind: "lmstudio", label: "LM Studio", group: "local", defaultPrefix: "lmstudio/", defaultBaseUrl: "", placeholderUrl: "http://localhost:1234", listing: "openai", engine: "lmstudio", hint: "A local LM Studio server, checked directly." },
-  { kind: "omlx", label: "oMLX", group: "local", defaultPrefix: "omlx/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "openai", hint: "A local oMLX server (OpenAI-compatible), checked directly." },
+  { kind: "omlx", label: "oMLX", group: "local", defaultPrefix: "omlx/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "omlx", hint: "A local oMLX server (OpenAI-compatible), checked directly; busy requests come from /api/status with its API key." },
   { kind: "vllm", label: "vLLM", group: "local", defaultPrefix: "vllm/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "vllm", hint: "A local vLLM server, checked directly." },
   { kind: "llamacpp", label: "llama.cpp server", group: "local", defaultPrefix: "llamacpp/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8080", listing: "openai", engine: "llamacpp", hint: "A local llama.cpp server, checked directly (slots included)." },
   { kind: "direct", label: "Direct to engines (no proxy)", group: "virtual", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "none", hint: "For setups without a proxy: a pool on it reaches the local engines directly. Its models are the engines' models, each with that engine's prefix." },

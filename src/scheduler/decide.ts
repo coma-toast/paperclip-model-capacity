@@ -1,5 +1,6 @@
-import { OPEN_TASK_STATUSES, PRIORITY_RANK } from "../constants.js";
-import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
+import { OPEN_TASK_STATUSES, PRIORITY_RANK, virtualModel } from "../constants.js";
+import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canRun } from "./model.js";
+import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
 interface Group {
   key: string;
@@ -50,6 +51,8 @@ const anyHostUp = (pool: PoolConfig, snapshot: Snapshot) => pool.hosts.length ==
 const minutesSince = (iso: string, now: Date) => (now.getTime() - Date.parse(iso)) / 60_000;
 
 export const DEFAULT_REASSIGN_AFTER_MINUTES = 30;
+// Points of quota left by which the other subscription must lead before a switching pool moves an agent to it.
+export const SWITCH_MARGIN = 20;
 
 // P2.6: a sticky pool keeps each task on one engine for its prompt cache. Capacity is counted per engine, and the
 // pool total still applies. Per task, in queue order:
@@ -69,63 +72,139 @@ const stickyActions = (input: {
 }): Action[] => {
   const { pool, snapshot, now, waiting, holdsByIssue, paused } = input;
   const targets = pool.placement ?? [];
-  const byModel = new Map(targets.map((t) => [t.model, t]));
+  // A target answers to its model and to any alias (another name that reaches only its engine).
+  const byModel = new Map(targets.flatMap((t) => [t.model, ...(t.aliases ?? [])].map((m) => [m, t] as const)));
+  const namesOf = (t: PlacementTarget) => new Set([t.model, ...(t.aliases ?? [])]);
   const hostConfig = new Map(pool.hosts.map((h) => [h.id, h]));
   const runIssues = new Set(snapshot.runs.map((r) => r.issueId));
   const occupying = snapshot.runs.filter((r) => r.poolId === pool.id && occupiesSlot(r));
+  const exhausted = (model: string) => snapshot.exhausted?.[`${pool.companyId ?? ""}|${model}`];
   const free = new Map<string, number>();
   for (const t of targets) {
+    // A quota pool's model has no engine: it has room unless its quota is used up (the pool limit still applies).
+    if (!t.hostId) {
+      free.set(t.model, exhausted(t.model) ? 0 : Infinity);
+      continue;
+    }
     const status = snapshot.hosts[t.hostId];
     const config = hostConfig.get(t.hostId);
     if (!status?.up || !config) {
       free.set(t.model, 0);
       continue;
     }
-    const mine = occupying.filter((r) => r.model === t.model).length;
-    const pending = snapshot.released.filter((r) => r.poolId === pool.id && r.model === t.model && !runIssues.has(r.issueId)).length;
+    const names = namesOf(t);
+    const mine = occupying.filter((r) => r.model !== undefined && names.has(r.model)).length;
+    const pending = snapshot.released.filter((r) => r.poolId === pool.id && r.model !== undefined && names.has(r.model) && !runIssues.has(r.issueId)).length;
     const outside = Math.max(0, (status.slotsBusy ?? 0) - mine);
-    free.set(t.model, Math.max(0, (status.slotsTotal ?? config.declaredSlots) - outside - mine - pending));
+    const slots = Math.min(t.cap ?? Infinity, status.slotsTotal ?? config.declaredSlots);
+    free.set(t.model, Math.max(0, slots - outside - mine - pending));
   }
   let poolRoom = input.poolRoom;
-  const downTooLong = (hostId: string) => {
-    const status = snapshot.hosts[hostId];
+  // An engine down, or a quota model used up, for reassignAfterMinutes: a task the plugin pinned there may move.
+  const unavailableTooLong = (t: PlacementTarget) => {
+    const limit = pool.reassignAfterMinutes ?? DEFAULT_REASSIGN_AFTER_MINUTES;
+    if (!t.hostId) {
+      const e = exhausted(t.model);
+      return Boolean(e && minutesSince(e.since, now) >= limit);
+    }
+    const status = snapshot.hosts[t.hostId];
     const since = status?.lastChangeAt ?? status?.lastProbeAt;
-    return Boolean(status && !status.up && since && minutesSince(since, now) >= (pool.reassignAfterMinutes ?? DEFAULT_REASSIGN_AFTER_MINUTES));
+    return Boolean(status && !status.up && since && minutesSince(since, now) >= limit);
   };
   const taskModel = new Map(snapshot.tasks.map((t) => [t.issueId, t.model]));
   const parentModel = (t: OpenTask) => {
     const model = t.parentId ? taskModel.get(t.parentId) ?? snapshot.placements?.[t.parentId] : undefined;
-    return model && byModel.has(model) ? model : undefined;
+    return model ? byModel.get(model)?.model : undefined;
   };
 
   const entries = waiting
     .map((t) => ({ t, held: holdsByIssue.get(t.issueId) }))
     .map((e) => ({ ...e, q: { issueId: e.t.issueId, companyId: e.t.companyId, priority: e.held?.priority ?? e.t.priority, heldAt: e.held?.heldAt ?? snapshot.now } }))
     .sort((a, b) => byQueueOrder(a.q, b.q));
+  // Switching pools: an idle agent on the pool's virtual model with a task waiting moves to the other subscription's
+  // adapter when its own subscription's models are all used up and the other's aren't, or the other subscription has
+  // SWITCH_MARGIN points more quota left. Its tasks wait one cycle while it switches.
   const out: Action[] = [];
+  const switching = new Set<string>();
+  if (pool.switchAdapters) {
+    const agentModelName = virtualModel(pool.localId ?? pool.id);
+    const occupied = new Set(snapshot.runs.map((r) => r.agentId));
+    for (const a of (snapshot.poolAgents ?? []).filter((x) => x.model === agentModelName && (!pool.companyId || x.companyId === pool.companyId))) {
+      const own = a.adapterType ? ADAPTER_PROVIDER[a.adapterType] : undefined;
+      if (!own || occupied.has(a.id) || !entries.some((e) => e.t.agentId === a.id)) continue;
+      const other = own === "anthropic" ? "openai" : "anthropic";
+      const ownModels = targets.filter((x) => canRun(a.adapterType, x.model));
+      const otherModels = targets.filter((x) => canRun(PROVIDER_ADAPTER[other], x.model));
+      if (!otherModels.some((x) => !exhausted(x.model))) continue;
+      const left = snapshot.subscriptionLeft?.[a.companyId];
+      const ownOut = !ownModels.some((x) => !exhausted(x.model));
+      const more = left?.[own] !== undefined && left?.[other] !== undefined && left[other]! >= left[own]! + SWITCH_MARGIN;
+      if (!ownOut && !more) continue;
+      const to = otherModels.find((x) => !exhausted(x.model))!;
+      out.push({
+        kind: "switchAdapter", agentId: a.id, companyId: a.companyId, poolId: pool.id, fromAdapterType: a.adapterType!, toAdapterType: PROVIDER_ADAPTER[other], model: to.model,
+        reason: ownOut ? "own subscription used up" : `${left![other]}% left vs ${left![own]}%`,
+      });
+      switching.add(a.id);
+    }
+  }
+
+  // Out of quota for a task: every model its agent can run is used up (or on a down engine), and in a switching pool
+  // the other subscription's models are too.
+  const unavailable = (x: PlacementTarget) => (x.hostId ? !snapshot.hosts[x.hostId]?.up : Boolean(exhausted(x.model)));
+  const outOfQuota = (t: OpenTask) => {
+    const usable = targets.filter((x) => canRun(t.adapterType, x.model) || pool.switchAdapters);
+    return usable.length > 0 && usable.every(unavailable);
+  };
+
   const fresh: QueueEntry[] = [];
   for (const { t, held, q } of entries) {
+    // Its last wake-up started no run: it keeps waiting, held, without taking the slot from the next task.
+    if (held && snapshot.wakeCooldown?.[t.issueId]) continue;
+    if (switching.has(t.agentId)) {
+      if (!held) fresh.push(q);
+      continue;
+    }
+    // Only models the task's agent can run (a Claude Code agent can't take a GPT model).
+    const fits = (x: PlacementTarget | undefined) => x !== undefined && canRun(t.adapterType, x.model);
     let target = t.model ? byModel.get(t.model) : undefined;
+    if (!fits(target)) target = undefined;
+    // In a quota pool, a task still on its agent's own model (no override) may go to another of the agent's models when
+    // that one is used up or full; a model someone set on the task stays.
+    if (pool.kind === "quota" && target && t.model === t.agentModel && (exhausted(target.model) || (free.get(target.model) ?? 0) <= 0)) target = undefined;
     let reason: PlaceReason | undefined;
-    if (target && snapshot.placements?.[t.issueId] === t.model && downTooLong(target.hostId)) {
+    // An engine capped at 0 takes no new work: a task the plugin placed there that hasn't started moves at once (a
+    // running one finishes where it is).
+    if (target && snapshot.placements?.[t.issueId] === t.model && (unavailableTooLong(target) || target.cap === 0)) {
       target = undefined;
       reason = "engineDown";
     }
     const humanPinned = !target && !reason && t.pinned;
     if (!target && !humanPinned) {
-      const fromParent = reason ? undefined : parentModel(t);
-      target = fromParent ? byModel.get(fromParent) : targets.find((x) => (free.get(x.model) ?? 0) > 0);
+      const parentTarget = reason ? undefined : byModel.get(parentModel(t) ?? "");
+      const fromParent = fits(parentTarget) ? parentTarget : undefined;
+      target = fromParent ?? targets.find((x) => fits(x) && (free.get(x.model) ?? 0) > 0);
       reason ??= fromParent ? "parent" : "new";
     }
     const room = !paused && poolRoom > 0 && (humanPinned || (target !== undefined && (free.get(target.model) ?? 0) > 0));
     if (!room) {
+      // P2.7.3: a task goes to the fallback pool (which places or holds it as usual) when this pool can't run it at all:
+      // every model its agent can run is out of quota, or every engine is down. A task someone set a model on stays, and
+      // so does one whose agent can switch to the other subscription here.
+      if (!humanPinned && !paused && pool.fallbackPool && outOfQuota(t)) {
+        out.push({ kind: "place", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, model: virtualModel(pool.fallbackPool), reason: "fallback" });
+        if (held) out.push({ kind: "release", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, reason: "manual" });
+        continue;
+      }
       if (!held) fresh.push(q);
       continue;
     }
-    if (target && target.model !== t.model) out.push({ kind: "place", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, model: target.model, reason: reason ?? "new" });
+    // A task on the target's model or one of its aliases is already there.
+    const onTarget = target !== undefined && t.model !== undefined && namesOf(target).has(t.model);
+    if (target && !onTarget) out.push({ kind: "place", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, model: target.model, reason: reason ?? "new" });
     if (held) out.push({ kind: "release", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, reason: "capacity", ...(target ? { model: target.model } : {}) });
     // Only a task the plugin acts on takes a slot now, as in plain pools: a waiting task nobody wakes mustn't block.
-    if (held || (target && target.model !== t.model)) {
+    if (held || (target && !onTarget)) {
       if (target) free.set(target.model, (free.get(target.model) ?? 1) - 1);
       poolRoom -= 1;
     }
@@ -226,7 +305,10 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     queue.sort(byQueueOrder);
     const paused = heldPools.has(pool.id) || pool.disabled === true;
     if (!paused && anyHostUp(pool, snapshot)) {
-      for (const entry of queue.splice(0, Math.max(0, available - used))) {
+      // A task whose last wake-up started no run stays queued and is passed over.
+      const ready = queue.filter((e) => !snapshot.wakeCooldown?.[e.issueId]);
+      for (const entry of ready.splice(0, Math.max(0, available - used))) {
+        queue.splice(queue.indexOf(entry), 1);
         actions.push({ kind: "release", issueId: entry.issueId, companyId: entry.companyId, poolId: pool.id, reason: "capacity" });
         used += 1;
       }

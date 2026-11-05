@@ -4,27 +4,47 @@ import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCom
 import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
 import { APIS, addPrefix, apiInfo, backendFromConnection, frontsEngines, hasEndpoint, stripPrefix, type ApiKind } from "../apis.js";
-import { backendPrefix, type Backend, type BackendSummary } from "../backends.js";
-import { virtualModel } from "../constants.js";
+import { backendForModel, backendPrefix, type Backend, type BackendSummary } from "../backends.js";
+import { VIRTUAL_MODEL_PREFIX, virtualModel } from "../constants.js";
 import type { ListModelsResult } from "../models.js";
 import type { InspectResult } from "../probes/inspect.js";
 import { patternMatches } from "../scheduler/match.js";
+import { canRun } from "../scheduler/model.js";
 import type { PoolConfig } from "../types.js";
 import { Button, Card, Choice, Field, MUTED, Pill, SectionTitle, inputStyle } from "./components/form.js";
+import { TASK_TOKENS, formatPerMillion, priceRating, taskCost, type ModelPrice } from "../prices.js";
 import { connectionKeyBinding, createCompanySecret, listAiConnections, readPluginConfig, savePluginConfig, setAgentModel, type AiConnection, type SecretBinding } from "./hostApi.js";
 
 type FieldError = { field: string; message: string };
 type Result = { ok: boolean; error?: string; errors?: FieldError[] };
 
-const PLACED = /^pools\[\d+\]\.(name|id|backend|watch|sticky|reassignAfterMinutes|agentModel|limit|alertAfterMinutes|patterns|mode|privacy)$/;
+const PLACED = /^pools\[\d+\]\.(name|id|kind|engines|fallbackPool|fallbackAfterMinutes|backend|watch|sticky|reassignAfterMinutes|agentModel|limit|alertAfterMinutes|patterns|mode|privacy)$/;
 
-const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean) }));
+// A kind pool's agent model is always its virtual model, so it follows id changes.
+const cleaned = (pools: PoolConfig[]) => pools.map((p) => ({ ...p, patterns: p.patterns.map((x) => x.trim()).filter(Boolean), ...(p.kind ? { agentModel: virtualModel(p.id) } : {}) }));
 
 // A9: a new pool starts in observe mode.
 const newPool = (n: number, backend?: BackendSummary): PoolConfig => ({
   id: `pool-${n}`, name: `Pool ${n}`, backend: backend?.id, patterns: [], limit: 1, privacy: backend && apiInfo(backend.type).group === "cloud" ? "shared" : "private",
   mode: "observe", hosts: [], alertAfterMinutes: 30, scope: "instance",
 });
+
+// P2.7 pool kinds. New pools start in observe mode (A9).
+const newKindPool = (kind: "engine" | "quota", n: number): PoolConfig => ({
+  id: `pool-${n}`, name: kind === "engine" ? `Engines ${n}` : `Quota ${n}`, kind, patterns: [], limit: kind === "engine" ? 0 : 1, hosts: [],
+  privacy: kind === "engine" ? "private" : "shared", mode: "observe", alertAfterMinutes: 30, scope: "instance", agentModel: virtualModel(`pool-${n}`),
+  ...(kind === "engine" ? { engines: [] } : {}),
+});
+
+// The first pool-<n> id no pool uses yet, so a new card never clashes with an existing id.
+const nextPoolNumber = (pools: PoolConfig[]) => {
+  let n = pools.length + 1;
+  while (pools.some((p) => p.id === `pool-${n}`)) n++;
+  return n;
+};
+
+let keySeq = 0;
+const newKey = () => `card-${++keySeq}`;
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "backend";
 
@@ -82,6 +102,8 @@ const ServerReport = ({ report }: { report: InspectHostResult }) => {
 const AgentModelsPanel = ({ uses, pools, backends, onAdd, onNewPool }: {
   uses: AgentModelUse[]; pools: PoolConfig[]; backends: BackendSummary[]; onAdd: (poolIndex: number, model: string) => void; onNewPool: (group: AgentModelUse[]) => void;
 }) => {
+  // Agents on a pool's own "pool/<id>" model already use that pool.
+  uses = uses.filter((u) => !u.model.startsWith(VIRTUAL_MODEL_PREFIX));
   if (!uses.length) return null;
   const coveredBy = (model: string) => pools.find((p) => p.patterns.some((pt) => pt.trim() && patternMatches(pt.trim(), model)));
   const uncovered = uses.filter((u) => !coveredBy(u.model));
@@ -195,6 +217,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(address ? { baseUrl: address } : {}),
         prefix: (draft.prefix ?? info.defaultPrefix).trim(),
         ...(info.group === "local" ? { slots: draft.slots ?? 1 } : {}),
+        ...(info.group === "local" && draft.reachVia ? { reachVia: draft.reachVia, ...(draft.reachModel ? { reachModel: draft.reachModel } : {}) } : {}),
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
         ...(keyBinding ? { key: keyBinding } : {}),
@@ -266,6 +289,15 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
             </Field>
           ) : null}
         </div>
+        {info.group === "local" ? (
+          <Field label="Agents reach it" hint="Through a proxy (the model name is read from its routing after saving), or directly (the harness config gets a provider for this engine).">
+            <select style={inputStyle} value={draft.reachVia ?? ""} onChange={(e) => set({ reachVia: e.target.value || undefined, reachModel: undefined })}>
+              <option value="">Not set</option>
+              {taken.filter((b) => b.id !== draft.id && apiInfo(b.type).group === "gateway").map((b) => <option key={b.id} value={b.id}>Through {b.name}</option>)}
+              <option value="direct">Directly</option>
+            </select>
+          </Field>
+        ) : null}
         {hasEndpoint(draft.type) ? (
           <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} /> Custom auth header
@@ -300,6 +332,30 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
 };
 
 // The company's backends: each defined once, used by pools.
+interface ReachReport {
+  engines: { engineId: string; reachVia?: string; reachModel?: string; candidates: string[]; ok: boolean; problem?: string }[];
+  balanced: { proxyId: string; model: string; engines: string[] }[];
+}
+
+// One engine's reach: the model name agents use for it, checked against the proxy's routing (or the engine's models).
+const ReachLine = ({ reach, backends, onPick }: { reach?: ReachReport["engines"][number]; backends: BackendSummary[]; onPick: (model: string) => void }) => {
+  if (!reach) return null;
+  const via = reach.reachVia === "direct" ? "directly" : `through ${backends.find((b) => b.id === reach.reachVia)?.name ?? reach.reachVia}`;
+  if (reach.ok) return <span style={{ fontSize: 12 }}><Pill tone="ok">reached</Pill> <span style={MUTED}>{via} as</span> <code>{reach.reachModel}</code></span>;
+  return (
+    <span style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <Pill tone="warn">{reach.reachVia ? "check" : "not set"}</Pill>
+      <span style={{ color: "#f59e0b" }}>{reach.problem}</span>
+      {reach.candidates.length ? (
+        <select style={{ ...inputStyle, width: "auto", padding: "2px 6px" }} value="" onChange={(e) => e.target.value && onPick(e.target.value)}>
+          <option value="">{reach.reachVia === "direct" ? "Pick the model…" : `Use a name it routes only here…`}</option>
+          {reach.candidates.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      ) : null}
+    </span>
+  );
+};
+
 const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId: string; backends: BackendSummary[]; pools: PoolConfig[]; onChanged: () => void }) => {
   const inspect = usePluginAction("inspect-backend");
   const toast = usePluginToast();
@@ -307,6 +363,24 @@ const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId:
   const [reports, setReports] = useState<Record<string, InspectHostResult | { ok: false; error?: string }>>({});
   const [checking, setChecking] = useState<string>();
   const usedBy = (id: string) => pools.filter((p) => p.backend === id || p.watch?.includes(id)).map((p) => p.name);
+  // How agents reach each engine, rechecked whenever the backends change.
+  const loadReach = usePluginAction("engine-reach");
+  const [reach, setReach] = useState<ReachReport | null>(null);
+  const backendsKey = JSON.stringify(backends);
+  useEffect(() => {
+    let live = true;
+    (loadReach({ companyId }) as Promise<{ ok: boolean } & ReachReport>).then((r) => live && r.ok && setReach(r)).catch(() => undefined);
+    return () => { live = false; };
+  }, [companyId, backendsKey]);
+  const setReachModel = async (engineId: string, reachModel: string) => {
+    try {
+      const config = await readPluginConfig(companyId);
+      await savePluginConfig(companyId, { ...config, backends: ((config.backends ?? []) as Backend[]).map((x) => (x.id === engineId ? { ...x, reachModel } : x)) });
+      onChanged();
+    } catch (e) {
+      toast({ title: `Couldn't save: ${e instanceof Error ? e.message : String(e)}`, tone: "error" });
+    }
+  };
   const check = async (b: BackendSummary) => {
     setChecking(b.id);
     const r = (await inspect({ companyId, backendId: b.id }).catch((e: Error) => ({ ok: false, error: e.message }))) as InspectHostResult | { ok: false; error?: string };
@@ -348,10 +422,16 @@ const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId:
               <Button onClick={() => setEditing(b)}>Edit</Button>
               <Button kind="danger" onClick={() => void remove(b)}>Remove</Button>
             </div>
+            {info.group === "local" ? <ReachLine reach={reach?.engines.find((r) => r.engineId === b.id)} backends={backends} onPick={(m) => void setReachModel(b.id, m)} /> : null}
             {report ? (report.ok ? <ServerReport report={report} /> : <span style={{ color: "#ef4444", fontSize: 12 }}>{report.error}</span>) : null}
           </div>
         );
       })}
+      {reach?.balanced.length ? (
+        <span style={{ color: "#f59e0b", fontSize: 12 }}>
+          {reach.balanced.map((r) => `${r.model} goes to ${r.engines.map((id) => backends.find((b) => b.id === id)?.name ?? id).join(" + ")}`).join("; ")}. An engine pool replaces this: remove it from the proxy once no agent uses it.
+        </span>
+      ) : null}
       {editing ? <BackendForm companyId={companyId} initial={editing === "new" ? undefined : editing} taken={backends} onClose={() => setEditing(null)} onSaved={onChanged} /> : null}
     </Card>
   );
@@ -369,12 +449,28 @@ interface PickerRow {
 
 const isWildcard = (pattern: string) => /[*?]/.test(pattern);
 
+const RATING_COLOR: Record<string, string> = { Plan: "#3b82f6", Free: "#22c55e", $: "#22c55e", $$: "#eab308", $$$: "#f97316", $$$$: "#ef4444" };
+
+// A model's input/output price and its cost rating, with the estimated cost of a task on hover.
+const PriceCells = ({ price }: { price?: ModelPrice }) => {
+  const cost = taskCost(price);
+  const rating = priceRating(price);
+  const estimate = price?.included ? "Included in the subscription; premium models use its monthly premium requests" : cost === undefined ? "Price unknown" : cost === 0 ? "Free to run" : `About $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)} per task (${TASK_TOKENS.input / 1000}k in, ${TASK_TOKENS.output / 1000}k out)`;
+  return (
+    <>
+      <span style={{ ...MUTED, fontVariantNumeric: "tabular-nums" }}>{price?.included ? "in plan" : price?.free ? "free" : price ? `${formatPerMillion(price.input)} / ${formatPerMillion(price.output)}` : "?"}</span>
+      <span title={estimate} style={{ fontSize: 12, fontWeight: 600, color: RATING_COLOR[rating], opacity: rating === "?" ? 0.5 : 1 }}>{rating}</span>
+    </>
+  );
+};
+
 const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error, onChange }: {
   pool: PoolConfig; backend?: BackendSummary; prefix: string; companyId: string; uses: AgentModelUse[]; otherPools: PoolConfig[]; error?: string; onChange: (p: Partial<PoolConfig>) => void;
 }) => {
   const list = usePluginAction("list-backend-models");
   const listing = backend ? apiInfo(backend.type).listing : "none";
   const [models, setModels] = useState<string[] | null>(null);
+  const [prices, setPrices] = useState<Record<string, ModelPrice>>({});
   const [source, setSource] = useState("");
   const [problem, setProblem] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -386,10 +482,11 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
     if (!backend || listing === "none") return setModels([]);
     setLoading(true);
     setProblem(undefined);
-    const r = (await list({ companyId, backendId: backend.id }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string };
+    const r = (await list({ companyId, backendId: backend.id }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: string[]; source?: string; prices?: Record<string, ModelPrice> };
     setLoading(false);
     if (r.ok) {
       setModels(r.models ?? []);
+      setPrices(r.prices ?? {});
       setSource(r.source ?? "");
     } else {
       setModels([]);
@@ -424,7 +521,7 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
   })).sort((a, b) => Number(selected.includes(b.full)) - Number(selected.includes(a.full)) || b.agents - a.agents || a.id.localeCompare(b.id));
   const shown = rows.filter((r) => r.id.toLowerCase().includes(filter.toLowerCase()) && (!selectedOnly || selected.includes(r.full)));
   const toggle = (full: string) => onChange({ patterns: selected.includes(full) ? selected.filter((p) => p !== full) : [...selected, full] });
-  const cols = "28px minmax(0, 1fr) 90px 150px";
+  const cols = "28px minmax(0, 1fr) 112px 52px 72px 110px";
 
   return (
     <div style={{ display: "grid", gap: 6 }}>
@@ -442,7 +539,10 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
       {error ? <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span> : null}
       <div style={{ border: "1px solid rgba(128,128,128,0.45)", borderRadius: 8, fontSize: 13, maxHeight: 280, overflowY: "auto" }}>
         <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "6px 10px", position: "sticky", top: 0, background: "rgba(128,128,128,0.12)", backdropFilter: "blur(6px)" }}>
-          <span /><span style={MUTED}>{prefix ? `Model (after ${prefix})` : "Model"}</span><span style={MUTED}>Agents</span><span style={MUTED}>Note</span>
+          <span /><span style={MUTED}>{prefix ? `Model (after ${prefix})` : "Model"}</span>
+          <span style={MUTED} title="US dollars per million tokens, input / output">In / out per 1M</span>
+          <span style={MUTED} title={`Estimated cost of one task: ${TASK_TOKENS.input / 1000}k input and ${TASK_TOKENS.output / 1000}k output tokens`}>Cost</span>
+          <span style={MUTED}>Agents</span><span style={MUTED}>Note</span>
         </div>
         {shown.map((r) => {
           const inPool = selected.includes(r.full);
@@ -451,6 +551,7 @@ const ModelPicker = ({ pool, backend, prefix, companyId, uses, otherPools, error
             <label key={r.full} style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "5px 10px", alignItems: "center", cursor: blocked ? "default" : "pointer", opacity: blocked ? 0.55 : 1 }}>
               <input type="checkbox" checked={inPool} disabled={blocked} onChange={() => toggle(r.full)} />
               <code style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r.id}</code>
+              <PriceCells price={prices[r.id]} />
               <span style={MUTED}>{r.agents ? `${r.agents} agent${r.agents === 1 ? "" : "s"}` : "none"}</span>
               <span style={{ ...MUTED, color: !r.onEndpoint && models && listing !== "none" ? "#eab308" : undefined }}>
                 {blocked ? `in ${r.otherPool}` : !r.onEndpoint && models?.length && listing !== "none" ? "not on endpoint" : ""}
@@ -558,7 +659,7 @@ const StickySection = ({ pool, engines, error, onChange, defaultEngine, route }:
   );
 };
 
-interface AgentBrief { id: string; name: string; model?: string }
+interface AgentBrief { id: string; name: string; model?: string; adapterType?: string }
 
 // Agents use a pool instead of a specific model by pointing at its agent model (for a pinning pool, an entry model such
 // as a gateway alias, so the pool picks each task's engine). Adding an agent here changes its model.
@@ -566,41 +667,60 @@ const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }
   pool: PoolConfig; saved: boolean; agents: AgentBrief[]; error?: string; onChange: (p: Partial<PoolConfig>) => void; onAgentsChanged: () => void;
 }) => {
   const toast = usePluginToast();
-  const [busy, setBusy] = useState(false);
+  // The agent being added, shown with a spinner until the refreshed agent list has it on the pool's model.
+  const [adding, setAdding] = useState<AgentBrief | null>(null);
   const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
   const pinned = new Set((pool.sticky ?? []).map((t) => t.model));
-  const on = pool.agentModel ? agents.filter((a) => a.model === pool.agentModel) : [];
+  // Engine and quota pools: agents always use the pool's virtual model.
+  const agentModel = pool.kind ? virtualModel(pool.id) : pool.agentModel;
+  // A switching pool's agents keep a real model (Claude Code and Codex can't run a pool name before the task is placed):
+  // they're the ones on the pool's name or on one of its models, and an added agent gets the first model it can run.
+  const realModels = pool.switchAdapters === true;
+  const isOn = (a: AgentBrief) => a.model === agentModel || (realModels && a.model !== undefined && models.includes(a.model));
+  const modelFor = (a: AgentBrief) => (realModels ? models.find((m) => canRun(a.adapterType, m)) : undefined) ?? agentModel;
+  const on = agentModel ? agents.filter(isOn) : [];
+  useEffect(() => {
+    if (adding && on.some((a) => a.id === adding.id)) setAdding(null);
+  }, [adding, on]);
   const add = async (agentId: string) => {
     const agent = agents.find((a) => a.id === agentId);
-    if (!agent || !pool.agentModel) return;
-    setBusy(true);
+    if (!agent || !agentModel) return;
+    setAdding(agent);
+    const model = modelFor(agent)!;
     try {
-      await setAgentModel(agent.id, pool.agentModel);
-      toast({ title: `${agent.name} now uses ${pool.name} (model ${pool.agentModel})`, tone: "success" });
+      await setAgentModel(agent.id, model);
+      toast({ title: `${agent.name} now uses ${pool.name} (model ${model})`, tone: "success" });
       onAgentsChanged();
     } catch (e) {
+      setAdding(null);
       toast({ title: `Couldn't change ${agent.name}'s model: ${e instanceof Error ? e.message : String(e)}`, tone: "error" });
-    } finally {
-      setBusy(false);
     }
   };
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <SectionTitle title="Agents on this pool" hint="Agents use the pool instead of a specific model by pointing at its agent model." />
-      <Field label="Agent model" hint={pool.sticky?.length ? `${virtualModel(pool.id)} lets the pool pick each task's engine. Add the harness config below so it also works before a task is placed.` : "The model agents on this pool use."} error={error}>
+      {pool.kind ? <span style={{ fontSize: 13 }}>Agents use <code>{agentModel}</code>; the pool picks {pool.kind === "engine" ? "the engine" : "a model with quota left"} for each task.</span> : null}
+      {pool.kind === "quota" ? (
+        <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
+          <input type="checkbox" checked={pool.switchAdapters === true} onChange={(e) => onChange({ switchAdapters: e.target.checked || undefined })} />
+          <span>Switch agents between Claude Code and Codex<br /><span style={MUTED}>For a pool with Claude and ChatGPT/Codex models (set Subscription to Both). Before an agent's next run, when its subscription is used up, or the other one has 20 points more quota left, the agent is moved to the other tool and runs that side's model. Agents keep their own tasks, instructions and skills; each switch starts a fresh session. Needs the board token in the plugin's settings.</span></span>
+        </label>
+      ) : null}
+      {pool.kind ? null : <Field label="Agent model" hint={pool.sticky?.length ? `${virtualModel(pool.id)} lets the pool pick each task's engine. Add the harness config below so it also works before a task is placed.` : "The model agents on this pool use."} error={error}>
         <select style={inputStyle} value={pool.agentModel ?? ""} onChange={(e) => onChange({ agentModel: e.target.value || undefined })}>
           <option value="">None</option>
           {pool.sticky?.length ? <option value={virtualModel(pool.id)}>{virtualModel(pool.id)} (virtual: the pool picks the engine)</option> : null}
           {models.map((m) => <option key={m} value={m}>{m}{pinned.has(m) ? " (tied to an engine)" : ""}</option>)}
         </select>
-      </Field>
-      {pool.agentModel ? (
+      </Field>}
+      {agentModel ? (
         <>
-          <span style={{ fontSize: 13 }}>{on.length ? on.map((a) => a.name).join(", ") : <span style={MUTED}>No agents use it yet.</span>}</span>
+          <span style={{ fontSize: 13 }}>{on.length ? on.map((a) => a.name).join(", ") : adding ? null : <span style={MUTED}>No agents use it yet.</span>}</span>
+          {adding ? <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}><Spinner size="sm" label={`Adding ${adding.name}`} /> Adding {adding.name}…</span> : null}
           {saved ? (
-            <select style={inputStyle} value="" disabled={busy} onChange={(e) => void add(e.target.value)}>
-              <option value="">Add an agent…</option>
-              {agents.filter((a) => a.model !== pool.agentModel).map((a) => <option key={a.id} value={a.id}>{a.name}{a.model ? ` (now ${a.model})` : ""}</option>)}
+            <select style={inputStyle} value="" disabled={Boolean(adding)} onChange={(e) => void add(e.target.value)}>
+              <option value="">{adding ? `Adding ${adding.name}…` : "Add an agent…"}</option>
+              {agents.filter((a) => !isOn(a)).map((a) => <option key={a.id} value={a.id}>{a.name}{a.model ? ` (now ${a.model})` : ""}</option>)}
             </select>
           ) : <span style={MUTED}>Save the pool before adding agents.</span>}
         </>
@@ -628,10 +748,191 @@ const HarnessConfigCard = ({ companyId, version }: { companyId: string; version:
   );
 };
 
-const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChanged, otherPools, index, errorsFor, onChange, onRemove }: {
+// P2.7: an engine pool (ordered engines, each reached by its reach model, optionally capped) or a quota pool (a
+// backend's models in order, a limit, pausing while quota is used up). Agents use the pool's virtual model.
+const CollapseToggle = ({ open, onClick }: { open: boolean; onClick: () => void }) => (
+  <button type="button" onClick={(e) => { e.stopPropagation(); onClick(); }} aria-expanded={open} title={open ? "Collapse" : "Expand"}
+    style={{ border: "none", background: "none", color: "inherit", cursor: "pointer", padding: "0 2px", fontSize: 14, lineHeight: 1, opacity: 0.7 }}>{open ? "▾" : "▸"}</button>
+);
+
+// A pool card folded to one line: what it is, whether it's live, and how big it is. Click to open it.
+const CollapsedPool = ({ pool, backends, onExpand }: { pool: PoolConfig; backends: BackendSummary[]; onExpand: () => void }) => {
+  const engines = pool.engines ?? [];
+  const models = pool.patterns.filter((m) => m.trim()).length;
+  const slots = engines.reduce((n, e) => n + Math.min(e.cap ?? Infinity, backends.find((b) => b.id === e.engine)?.slots ?? 1), 0);
+  const size = pool.kind === "engine"
+    ? `${engines.length} engine${engines.length === 1 ? "" : "s"} · ${slots} slot${slots === 1 ? "" : "s"}`
+    : `${models} model${models === 1 ? "" : "s"} · ${pool.limit} at once`;
+  return (
+    <div role="button" tabIndex={0} onClick={onExpand} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onExpand()}
+      style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "10px 14px", border: "1px solid rgba(128, 128, 128, 0.45)", borderRadius: 10, cursor: "pointer" }}>
+      <CollapseToggle open={false} onClick={onExpand} />
+      <strong style={{ fontSize: 14 }}>{pool.name || pool.id || "New pool"}</strong>
+      <Pill tone="ok">{pool.kind === "engine" ? "Engine pool" : pool.kind === "quota" ? "Quota pool" : "Pool"}</Pill>
+      {pool.disabled ? <Pill tone="warn">Disabled</Pill> : null}
+      <Pill tone={pool.mode === "enforce" ? "warn" : "info"}>{pool.mode === "enforce" ? "Enforcing" : "Observing"}</Pill>
+      <span style={MUTED}>{size} · {pool.privacy}</span>
+    </div>
+  );
+};
+
+const KindPoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChanged, otherPools, index, errorsFor, onChange, onRemove, onCollapse }: {
+  pool: PoolConfig; companyId: string; backends: BackendSummary[]; uses: AgentModelUse[]; agents: AgentBrief[]; saved: boolean; onAgentsChanged: () => void;
+  otherPools: PoolConfig[]; index: number; errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void; onCollapse?: () => void;
+}) => {
+  const err = (f: string) => errorsFor(`pools[${index}].${f}`);
+  const engine = pool.kind === "engine";
+  const locals = backends.filter((b) => apiInfo(b.type).group === "local");
+  const takenElsewhere = new Set(otherPools.filter((p) => p.kind === "engine").flatMap((p) => (p.engines ?? []).map((e) => e.engine)));
+  const list = pool.engines ?? [];
+  const setEngines = (engines: NonNullable<PoolConfig["engines"]>) => onChange({ engines });
+  const move = <T,>(items: T[], i: number) => { const next = [...items]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next; };
+  const capacity = list.reduce((n, e) => n + Math.min(e.cap ?? Infinity, locals.find((b) => b.id === e.engine)?.slots ?? 1), 0);
+  const quotaBackends = backends.filter((b) => apiInfo(b.type).group !== "local" && apiInfo(b.type).group !== "virtual");
+  const models = pool.patterns.map((m) => m.trim()).filter(Boolean);
+  // Which backend's models the picker lists. Only for finding models: each model's backend comes from its name.
+  const [browse, setBrowse] = useState(() => pool.backend ?? backendForModel(models[0] ?? "", quotaBackends)?.id ?? "");
+  const backend = quotaBackends.find((b) => b.id === browse);
+  const modelBackends = [...new Set(models.map((m) => backendForModel(m, quotaBackends)?.name ?? (pool.backend ? quotaBackends.find((b) => b.id === pool.backend)?.name : undefined) ?? "subscription"))];
+  return (
+    <Card>
+      <header style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {onCollapse ? <CollapseToggle open onClick={onCollapse} /> : null}
+        <strong style={{ fontSize: 16 }}>{pool.name || pool.id}</strong>
+        <Pill tone="ok">{engine ? "Engine pool" : "Quota pool"}</Pill>
+        {pool.disabled ? <Pill tone="warn">Disabled</Pill> : null}
+        <Pill tone={pool.mode === "enforce" ? "warn" : "info"}>{pool.mode === "enforce" ? "Enforcing" : "Observing only"}</Pill>
+        <Pill>{engine ? `${capacity} slot${capacity === 1 ? "" : "s"}` : `${pool.limit} run${pool.limit === 1 ? "" : "s"} at once`}</Pill>
+        <Pill>{pool.privacy}</Pill>
+        <span style={{ flex: 1 }} />
+        <Button onClick={() => onChange({ disabled: pool.disabled ? undefined : true })}
+          title={pool.disabled ? "Start releasing work again" : "Stop releasing new work; runs already going finish. Use before shutting an engine down."}>
+          {pool.disabled ? "Enable" : "Disable (drain)"}
+        </Button>
+        <Button kind="danger" onClick={onRemove}>Remove pool</Button>
+      </header>
+
+      <div style={{ display: "grid", gridTemplateColumns: engine ? "2fr 1fr 1fr" : "2fr 1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Name" error={err("name")}><input style={inputStyle} value={pool.name} onChange={(e) => onChange({ name: e.target.value })} /></Field>
+        <Field label="Id" hint={`Agents use pool/${pool.id || "…"}`} error={err("id")}><input style={inputStyle} value={pool.id} onChange={(e) => onChange({ id: e.target.value })} /></Field>
+        {engine ? null : (
+          <Field label="Max runs at once" hint="0 holds everything" error={err("limit")}>
+            <input style={inputStyle} type="number" min={0} value={pool.limit} onChange={(e) => onChange({ limit: Number(e.target.value) })} />
+          </Field>
+        )}
+        <Field label="Alert after waiting" hint="Minutes" error={err("alertAfterMinutes")}>
+          <input style={inputStyle} type="number" min={1} value={pool.alertAfterMinutes} onChange={(e) => onChange({ alertAfterMinutes: Number(e.target.value) })} />
+        </Field>
+      </div>
+
+      {engine ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <SectionTitle title="Engines" hint="Tried top first. Each task is pinned to one engine and stays there for its prompt cache. Capacity is each engine's slots, or the cap you set." />
+          {list.length ? (
+            <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+              <tbody>
+                {list.map((e, i) => {
+                  const b = locals.find((x) => x.id === e.engine);
+                  return (
+                    <tr key={e.engine}>
+                      <td style={{ padding: "3px 8px 3px 0" }}>{i + 1}. {b?.name ?? e.engine}</td>
+                      <td style={{ padding: "3px 8px 3px 0" }}>{b?.reachModel ? <code>{b.reachModel}</code> : <span style={{ color: "#f59e0b", fontSize: 12 }}>not reached yet: set how agents reach it under Backends</span>}</td>
+                      <td style={{ padding: "3px 8px 3px 0", whiteSpace: "nowrap" }}>
+                        <span style={MUTED}>{b?.slots ?? 1} slot{(b?.slots ?? 1) === 1 ? "" : "s"}, use at most </span>
+                        <input style={{ ...inputStyle, width: 60, padding: "2px 6px", display: "inline-block" }} type="number" min={1} placeholder={String(b?.slots ?? 1)} value={e.cap ?? ""}
+                          onChange={(ev) => setEngines(list.map((x, j) => (j === i ? { engine: x.engine, ...(ev.target.value ? { cap: Number(ev.target.value) } : {}) } : x)))} />
+                      </td>
+                      <td style={{ padding: "3px 0", whiteSpace: "nowrap" }}>
+                        {i > 0 ? <button type="button" onClick={() => setEngines(move(list, i))} style={{ color: "#3b82f6", cursor: "pointer" }} title="Try earlier">↑</button> : null}{" "}
+                        <button type="button" onClick={() => setEngines(list.filter((_, j) => j !== i))} style={{ color: "#ef4444", cursor: "pointer" }} title="Remove">✕</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : <span style={MUTED}>No engines yet.</span>}
+          <select style={inputStyle} value="" onChange={(e) => e.target.value && setEngines([...list, { engine: e.target.value }])}>
+            <option value="">Add an engine…</option>
+            {locals.filter((b) => !list.some((e) => e.engine === b.id)).map((b) => (
+              <option key={b.id} value={b.id} disabled={takenElsewhere.has(b.id)}>{b.name}{takenElsewhere.has(b.id) ? " (in another engine pool)" : ""}</option>
+            ))}
+          </select>
+          {err("engines") ? <span style={{ color: "#ef4444", fontSize: 12 }}>{err("engines")}</span> : null}
+        </div>
+      ) : (
+        <>
+          <Field label="Subscription" hint="For a pool of Claude or ChatGPT/Codex subscription agents: its models pause while every account of that subscription has a usage window at 100% (needs the board token in the plugin's settings) or a run fails with a usage-limit message." error={err("subscription")}>
+            <select style={{ ...inputStyle, maxWidth: 260 }} value={pool.subscription ?? ""} onChange={(e) => onChange({ subscription: (e.target.value || undefined) as PoolConfig["subscription"] })}>
+              <option value="">None</option>
+              <option value="anthropic">Claude subscription</option>
+              <option value="openai">ChatGPT / Codex subscription</option>
+              <option value="both">Both (each model by its own subscription)</option>
+            </select>
+          </Field>
+          <Field label="Runs per model per day" hint="Optional. A model stops taking new tasks after this many runs today (UTC) and starts again at midnight UTC. Rate-limit errors that name a reset (e.g. OpenRouter's daily free-model limit) pause a model on their own." error={err("dailyRunCap")}>
+            <input style={{ ...inputStyle, maxWidth: 160 }} type="number" min={1} placeholder="No cap" value={pool.dailyRunCap ?? ""} onChange={(e) => onChange({ dailyRunCap: e.target.value ? Number(e.target.value) : undefined })} />
+          </Field>
+          <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
+            <input type="checkbox" checked={pool.allowOverQuota === true} onChange={(e) => onChange({ allowOverQuota: e.target.checked || undefined })} />
+            <span>Keep going over the quota<br /><span style={MUTED}>When a backend or subscription reports its quota used up, keep giving these models tasks instead of pausing them. Only where overage is billed or covered (Copilot premium requests past the allowance, ChatGPT credits past the weekly limit); otherwise the requests just fail. A run that fails with a rate- or usage-limit message still pauses its model.</span></span>
+          </label>
+          <Field label="Browse models from" hint={`Only picks which models the list shows; switching keeps the ones you ticked. Each model goes through the backend its name starts with (litellm/… through LiteLLM), and pauses on that backend's limits. Bare Claude and GPT names are subscription models.${models.length ? ` This pool uses: ${modelBackends.join(", ")}.` : ""}`} error={err("backend")}>
+            <select style={inputStyle} value={browse} onChange={(e) => setBrowse(e.target.value)}>
+              <option value="">Subscription and agents' models</option>
+              {quotaBackends.map((b) => <option key={b.id} value={b.id}>{b.name} ({apiInfo(b.type).label})</option>)}
+            </select>
+          </Field>
+          <div style={{ display: "grid", gap: 6 }}>
+            <SectionTitle title="Models" hint="Tick the models in this pool. A task on pool/ is pinned to the first one with quota left, top first." />
+            <ModelPicker pool={pool} backend={backend} prefix={backend ? backendPrefix(backend) : ""} companyId={companyId} uses={uses} otherPools={otherPools} error={err("patterns")} onChange={onChange} />
+            {models.length > 1 ? (
+              <span style={{ fontSize: 12 }}>
+                <span style={MUTED}>Tried in this order: </span>
+                {models.map((m, i) => (
+                  <span key={m} style={{ marginRight: 10 }}>
+                    {i + 1}. <code>{m}</code>{i > 0 ? <button type="button" onClick={() => onChange({ patterns: move(models, i) })} style={{ color: "#3b82f6", cursor: "pointer" }} title="Try earlier"> ↑</button> : null}
+                  </span>
+                ))}
+              </span>
+            ) : null}
+          </div>
+        </>
+      )}
+
+      <AgentsSection pool={pool} saved={saved} agents={agents} error={err("agentModel")} onChange={onChange} onAgentsChanged={onAgentsChanged} />
+
+      <div style={{ display: "grid", gap: 12 }}>
+        <Field label="Fallback pool" hint="A task goes there when this pool can't run it: every model its agent can run is out of quota (or every engine is down). Not while the pool can switch the agent to the other subscription, and never when the pool keeps going over quota. A task someone set a model on stays. Never from private to shared." error={err("fallbackPool")}>
+          <select style={inputStyle} value={pool.fallbackPool ?? ""} onChange={(e) => onChange({ fallbackPool: e.target.value || undefined })}>
+            <option value="">None: wait in this pool</option>
+            {otherPools.filter((p) => p.id).map((p) => <option key={p.id} value={p.id} disabled={pool.privacy === "private" && p.privacy === "shared"}>{p.name}{pool.privacy === "private" && p.privacy === "shared" ? " (shared)" : ""}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Mode" error={err("mode")}>
+          <Choice value={pool.mode} onChange={(mode) => onChange({ mode })} options={[
+            { value: "observe", label: "Observe", hint: "Log what it would hold; change nothing" },
+            { value: "enforce", label: "Enforce", hint: "Hold, pin and release tasks for real" },
+          ]} />
+        </Field>
+        <Field label="Privacy" error={err("privacy")}>
+          <Choice value={pool.privacy} onChange={(privacy) => onChange({ privacy })} options={[
+            { value: "private", label: "Private", hint: "Never falls back to a shared pool" },
+            { value: "shared", label: "Shared", hint: "Cloud or third-party models" },
+          ]} />
+        </Field>
+      </div>
+    </Card>
+  );
+};
+
+const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChanged, otherPools, index, errorsFor, onChange, onRemove, onCollapse }: {
   pool: PoolConfig; companyId: string; backends: BackendSummary[]; uses: AgentModelUse[]; agents: AgentBrief[]; saved: boolean; onAgentsChanged: () => void;
   otherPools: PoolConfig[]; index: number;
-  errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void;
+  errorsFor: (path: string) => string | undefined; onChange: (p: Partial<PoolConfig>) => void; onRemove: () => void; onCollapse?: () => void;
 }) => {
   const err = (f: string) => errorsFor(`pools[${index}].${f}`);
   const backend = backends.find((b) => b.id === pool.backend);
@@ -678,6 +979,7 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
   return (
     <Card>
       <header style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {onCollapse ? <CollapseToggle open onClick={onCollapse} /> : null}
         <strong style={{ fontSize: 16 }}>{pool.name || pool.id || "New pool"}</strong>
         {backend ? <Pill tone="ok">{backend.name}</Pill> : <Pill tone="warn">no backend</Pill>}
         {pool.disabled ? <Pill tone="warn">Disabled</Pill> : null}
@@ -784,18 +1086,23 @@ const PoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgentsChan
 // H4: a company's backends and pools. Queue label and alert task are on the host's plugin config form.
 export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
   const companyId = context.companyId;
-  const config = usePluginData<{ pools: PoolConfig[]; backends: BackendSummary[] }>("pools-config", { companyId });
+  const config = usePluginData<{ pools: PoolConfig[]; backends: BackendSummary[]; convertedAt?: string | null }>("pools-config", { companyId });
+  const dismissNote = usePluginAction("dismiss-conversion-note");
   const agentModels = usePluginData<{ uses: AgentModelUse[] }>("agent-models", { companyId });
   const agentList = usePluginData<{ agents: AgentBrief[] }>("agents", { companyId });
   const save = usePluginAction("save-pools");
   const toast = usePluginToast();
   const [pools, setPools] = useState<PoolConfig[] | null>(null);
+  // A stable key per card (pools can be added at the top, which shifts indexes) and which cards are open.
+  const [keys, setKeys] = useState<string[]>([]);
+  const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState<string>("");
   const [errors, setErrors] = useState<FieldError[]>([]);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (config.data && pools === null) {
       setPools(config.data.pools);
+      setKeys(config.data.pools.map(newKey));
       setSaved(JSON.stringify(config.data.pools));
     }
   }, [config.data, pools]);
@@ -821,13 +1128,29 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
     toast(r.ok ? { title: "Pools saved", tone: "success" } : { title: r.error ?? "Some settings need fixing (marked in red)", tone: "error" });
   };
 
+  // A new card goes where its button is (top or bottom) and opens.
+  const addPool = (pool: PoolConfig, where: "top" | "bottom") => {
+    const key = newKey();
+    setPools(where === "top" ? [pool, ...pools] : [...pools, pool]);
+    setKeys(where === "top" ? [key, ...keys] : [...keys, key]);
+    setOpenKeys(new Set([...openKeys, key]));
+  };
+  const removePool = (i: number) => {
+    setPools(pools.filter((_, j) => j !== i));
+    setKeys(keys.filter((_, j) => j !== i));
+  };
+  const setOpen = (key: string, open: boolean) => setOpenKeys((prev) => { const next = new Set(prev); if (open) next.add(key); else next.delete(key); return next; });
+  const n = nextPoolNumber(pools);
+
   // Shown above and below the pools, so Save is in reach without a floating bar over the form.
-  const actions = (
+  const actions = (where: "top" | "bottom") => (
     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-      <Button onClick={() => setPools([...pools, newPool(pools.length + 1, backends[0])])}>+ Add pool</Button>
+      <Button onClick={() => addPool(newKindPool("engine", n), where)}>+ Engine pool</Button>
+      <Button onClick={() => addPool(newKindPool("quota", n), where)}>+ Quota pool</Button>
+      {pools.length > 1 ? <Button onClick={() => setOpenKeys(openKeys.size ? new Set() : new Set(keys))}>{openKeys.size ? "Collapse all" : "Expand all"}</Button> : null}
       <span style={{ flex: 1 }} />
       <span style={MUTED}>{dirty ? "Unsaved pool changes" : "Pools saved"}</span>
-      <Button disabled={!dirty || saving} onClick={() => { setPools(JSON.parse(saved)); setErrors([]); }}>Discard</Button>
+      <Button disabled={!dirty || saving} onClick={() => { const back: PoolConfig[] = JSON.parse(saved); setPools(back); setKeys(back.map(newKey)); setOpenKeys(new Set()); setErrors([]); }}>Discard</Button>
       <Button kind="primary" disabled={!dirty || saving} onClick={() => void onSave()}>{saving ? "Saving…" : "Save pools"}</Button>
     </div>
   );
@@ -841,24 +1164,45 @@ export const SettingsPage = ({ context }: PluginCompanySettingsPageProps) => {
           New pools start in <strong>Observe</strong>: the plugin only logs what it would hold until you switch the pool to <strong>Enforce</strong>.
         </span>
       </div>
+      {config.data?.convertedAt ? (
+        <Card>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 13 }}>
+              Your pools were converted to <strong>engine pools</strong> and <strong>quota pools</strong> on {new Date(config.data.convertedAt).toLocaleString()}.
+              A pool that pinned or watched engines is now an engine pool; the others are quota pools. Review them below.
+            </span>
+            <span style={{ flex: 1 }} />
+            <Button onClick={() => void dismissNote({ companyId }).then(() => config.refresh())}>Dismiss</Button>
+          </div>
+        </Card>
+      ) : null}
       <BackendsSection companyId={companyId} backends={backends} pools={pools} onChanged={() => config.refresh()} />
       <HarnessConfigCard companyId={companyId} version={saved} />
       <AgentModelsPanel uses={agentModels.data?.uses ?? []} pools={pools} backends={backends}
         onAdd={(i, model) => update(i, { patterns: [...pools[i].patterns.filter((p) => p.trim()), model] })}
-        onNewPool={(group) => setPools([...pools, poolFromAgents(group, pools, backends)])} />
-      {actions}
+        onNewPool={(group) => addPool(poolFromAgents(group, pools, backends), "bottom")} />
+      {actions("top")}
       {unplaced.length ? (
         <ul role="alert" style={{ color: "#ef4444", margin: 0, fontSize: 13 }}>
           {unplaced.map((e) => <li key={`${e.field}:${e.message}`}>{e.message} <span style={MUTED}>({e.field})</span></li>)}
         </ul>
       ) : null}
       {pools.length === 0 ? <span style={MUTED}>No pools yet. Start one from your agents' models above, or add one.</span> : null}
-      {pools.map((p, i) => (
-        <PoolCard key={i} pool={p} companyId={companyId} backends={backends} uses={agentModels.data?.uses ?? []}
-          agents={agentList.data?.agents ?? []} saved={JSON.parse(saved).some((q: PoolConfig) => q.id === p.id && q.agentModel === p.agentModel)}
-          onAgentsChanged={() => { agentList.refresh(); agentModels.refresh(); }} otherPools={pools.filter((_, j) => j !== i)} index={i} errorsFor={errorsFor} onChange={(patch) => update(i, patch)} onRemove={() => setPools(pools.filter((_, j) => j !== i))} />
-      ))}
-      {actions}
+      {pools.map((p, i) => {
+        const key = keys[i] ?? String(i);
+        // A card with something to fix stays open so the red field is visible.
+        const hasErrors = errors.some((e) => e.field.startsWith(`pools[${i}]`));
+        if (!openKeys.has(key) && !hasErrors) return <CollapsedPool key={key} pool={p} backends={backends} onExpand={() => setOpen(key, true)} />;
+        const shared = {
+          pool: p, companyId, backends, uses: agentModels.data?.uses ?? [], agents: agentList.data?.agents ?? [],
+          onAgentsChanged: () => { agentList.refresh(); agentModels.refresh(); }, otherPools: pools.filter((_, j) => j !== i), index: i, errorsFor,
+          onChange: (patch: Partial<PoolConfig>) => update(i, patch), onRemove: () => removePool(i), onCollapse: () => setOpen(key, false),
+        };
+        return p.kind
+          ? <KindPoolCard key={key} {...shared} saved={JSON.parse(saved).some((q: PoolConfig) => q.id === p.id)} />
+          : <PoolCard key={key} {...shared} saved={JSON.parse(saved).some((q: PoolConfig) => q.id === p.id && q.agentModel === p.agentModel)} />;
+      })}
+      {actions("bottom")}
     </div>
   );
 };

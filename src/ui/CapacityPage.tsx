@@ -7,6 +7,7 @@ import type { HistoryEntry } from "../state/store.js";
 import type { AlertEvent } from "../types.js";
 import { Button, inputStyle } from "./components/form.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
+import { EngineRunsDialog } from "./components/dialogs.js";
 import { BackendUsageTable, SubscriptionUsage } from "./components/usage.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
@@ -16,6 +17,7 @@ const describe = (e: HistoryEntry) => {
   if (a.kind === "hold") return `hold ${a.issueId} in ${a.poolId} (position ${a.position})`;
   if (a.kind === "release") return `release ${a.issueId} from ${a.poolId}${a.reason === "manual" ? " (manual)" : ""}`;
   if (a.kind === "alert") return `alert: ${a.alert.kind} ${a.alert.subject}`;
+  if (a.kind === "switchAdapter") return `switch agent ${a.agentId} from ${a.fromAdapterType} to ${a.toAdapterType} in ${a.poolId} (${a.reason})`;
   return a.kind;
 };
 
@@ -30,6 +32,8 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
   usePoll(refreshAll);
   const toast = usePluginToast();
   const [limits, setLimits] = useState<Record<string, string>>({});
+  const [engineId, setEngineId] = useState<string | null>(null);
+  const engine = engineId ? summary.data?.backends?.find((b) => b.id === engineId) : undefined;
   const actions = {
     releaseNow: usePluginAction("release-now"),
     moveToFront: usePluginAction("move-to-front"),
@@ -56,7 +60,8 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
         <MetricCard label="Waiting" value={pools.reduce((n, p) => n + p.queued, 0)} />
         <MetricCard label="Open alerts" value={alerts.data?.active.length ?? 0} />
       </div>
-      <BackendUsageTable rows={summary.data?.backends ?? []} companyId={context.companyId} onRefreshed={() => summary.refresh()} />
+      <BackendUsageTable rows={summary.data?.backends ?? []} companyId={context.companyId} onRefreshed={() => summary.refresh()} onOpenEngine={(r) => setEngineId(r.id)} />
+      {engine ? <EngineRunsDialog row={engine} companyId={context.companyId!} companyPrefix={context.companyPrefix} onClose={() => setEngineId(null)} onChanged={() => summary.refresh()} /> : null}
       <SubscriptionUsage companyId={context.companyId} />
       {summary.data && pools.length === 0 ? <div>No pools for this company yet. <EditPoolsLink companyPrefix={context.companyPrefix} label="Set up pools" /></div> : null}
 

@@ -22,6 +22,8 @@ export const PRUNE_CRON = "0 4 * * *";
 export const WAKE_CONFIRM_MS = 30_000;
 // A released task whose run never appears stops counting against the pool after this long.
 export const RELEASE_EXPIRY_MS = 5 * 60_000;
+// How long a held task whose wake-up started no run is skipped, so the slot goes to the next one.
+export const WAKE_COOLDOWN_MS = 10 * 60_000;
 // A run still queued this long while its agent is idle isn't about to start (e.g. its task is blocked), so it stops
 // counting as a model slot in use.
 export const STALLED_QUEUED_MS = 10 * 60_000;

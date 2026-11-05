@@ -9,11 +9,11 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "kind", "engines", "fallbackPool", "fallbackAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes", "dailyRunCap", "allowOverQuota", "subscription", "switchAdapters"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
-const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio"];
+const ENGINES: readonly EngineKind[] = ["llamacpp", "ollama", "openai", "vllm", "lmstudio", "omlx"];
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isWhole = (v: unknown, min: number) => typeof v === "number" && Number.isInteger(v) && v >= min;
@@ -49,6 +49,7 @@ const validateCommon = (raw: Record<string, unknown>, at: string, errors: FieldE
   if (!isWhole(raw.limit, 0)) errors.push({ field: `${at}.limit`, message: "Must be a whole number, 0 or more" });
   if (raw.disabled !== undefined && typeof raw.disabled !== "boolean") errors.push({ field: `${at}.disabled`, message: "Must be true or false" });
   if (raw.limitFromEngines !== undefined && typeof raw.limitFromEngines !== "boolean") errors.push({ field: `${at}.limitFromEngines`, message: "Must be true or false" });
+  if (raw.allowOverQuota !== undefined && typeof raw.allowOverQuota !== "boolean") errors.push({ field: `${at}.allowOverQuota`, message: "Must be true or false" });
   if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
   if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });
   if (raw.scope !== undefined && !["instance", "company"].includes(raw.scope as string)) errors.push({ field: `${at}.scope`, message: "Must be instance or company" });
@@ -71,6 +72,17 @@ const validateCommon = (raw: Record<string, unknown>, at: string, errors: FieldE
 };
 
 // A7 plus A9 defaults: rejects unknown fields, duplicate names and ids, bad limits, and overflow that breaks privacy (A10).
+// A fallback pool takes the tasks a pool can't run: every model out of quota, or every engine down.
+const validateFallback = (raw: Record<string, unknown>, at: string, errors: FieldError[]) => {
+  if (raw.fallbackPool !== undefined && !isText(raw.fallbackPool)) errors.push({ field: `${at}.fallbackPool`, message: "Pick a pool" });
+  if (raw.fallbackPool === raw.id && raw.id !== undefined) errors.push({ field: `${at}.fallbackPool`, message: "A pool can't fall back to itself" });
+  if (raw.fallbackAfterMinutes !== undefined && !isWhole(raw.fallbackAfterMinutes, 1)) errors.push({ field: `${at}.fallbackAfterMinutes`, message: "Must be a whole number of minutes, 1 or more" });
+};
+
+// An engine pool's limit comes from its engines, so only the other common settings apply.
+const validateCommonEngine = (raw: Record<string, unknown>, at: string, errors: FieldError[]) =>
+  validateCommon({ ...raw, limit: 0 }, at, errors);
+
 export const validatePools = (input: unknown): ValidationResult => {
   const errors: FieldError[] = [];
   if (!Array.isArray(input)) return { ok: false, errors: [{ field: "pools", message: "Must be a list" }] };
@@ -78,6 +90,7 @@ export const validatePools = (input: unknown): ValidationResult => {
   const ids = new Set<string>();
   const names = new Set<string>();
   const hostIds = new Set<string>();
+  const enginesUsed = new Map<string, string>();
   input.forEach((raw, i) => {
     const at = `pools[${i}]`;
     if (!isObject(raw)) return void errors.push({ field: at, message: "Must be an object" });
@@ -88,6 +101,25 @@ export const validatePools = (input: unknown): ValidationResult => {
     else if (names.has(String(raw.name).toLowerCase())) errors.push({ field: `${at}.name`, message: `Another pool is already named "${raw.name}"` });
     ids.add(String(raw.id).toLowerCase());
     names.add(String(raw.name).toLowerCase());
+    if (raw.kind !== undefined && raw.kind !== "engine" && raw.kind !== "quota") errors.push({ field: `${at}.kind`, message: "Must be engine or quota" });
+    // P2.7 engine pool: engines in order, each optionally capped; models come from the engines' reach models.
+    if (raw.kind === "engine") {
+      const engines = raw.engines;
+      if (!Array.isArray(engines) || !engines.length || !engines.every((e) => isObject(e) && isText(e.engine) && (e.cap === undefined || isWhole(e.cap, 1)))) {
+        errors.push({ field: `${at}.engines`, message: "Pick at least one engine (each cap a whole number, 1 or more)" });
+      } else {
+        for (const e of engines as { engine: string }[]) {
+          const other = enginesUsed.get(e.engine);
+          if (other !== undefined) errors.push({ field: `${at}.engines`, message: other === String(raw.id) ? "An engine is listed twice" : `An engine can be in one engine pool only; it's already in ${other}` });
+          enginesUsed.set(e.engine, String(raw.id));
+        }
+      }
+      validateFallback(raw, at, errors);
+      validateCommonEngine(raw, at, errors);
+      pools.push({ ...(raw as unknown as PoolConfig), patterns: [], limit: 0, mode: (raw.mode as PoolConfig["mode"]) ?? "observe", scope: "instance", hosts: [], alertAfterMinutes: (raw.alertAfterMinutes as number | undefined) ?? DEFAULT_ALERT_AFTER_MINUTES });
+      return;
+    }
+    validateFallback(raw, at, errors);
     if (!isTextList(raw.patterns) || !(raw.patterns as string[]).length) errors.push({ field: `${at}.patterns`, message: "Pick at least one model" });
     else if ((raw.patterns as string[]).some((p) => /[*?]/.test(p))) errors.push({ field: `${at}.patterns`, message: "Pick models from the list; wildcards aren't used" });
     if (raw.backend !== undefined && !isText(raw.backend)) errors.push({ field: `${at}.backend`, message: "Pick a backend" });
@@ -108,8 +140,12 @@ export const validatePools = (input: unknown): ValidationResult => {
       errors.push({ field: `${at}.agentModel`, message: "Must be the pool's virtual model or one of its models" });
     }
     if (raw.reassignAfterMinutes !== undefined && !isWhole(raw.reassignAfterMinutes, 1)) errors.push({ field: `${at}.reassignAfterMinutes`, message: "Must be a whole number of minutes, 1 or more" });
-    // With a backend, the API, prefix and address come from it (checked against the company's backends on save).
-    if (isText(raw.backend)) {
+    if (raw.dailyRunCap !== undefined && !isWhole(raw.dailyRunCap, 1)) errors.push({ field: `${at}.dailyRunCap`, message: "Must be a whole number of runs, 1 or more" });
+    if (raw.subscription !== undefined && !["anthropic", "openai", "both"].includes(raw.subscription as string)) errors.push({ field: `${at}.subscription`, message: "Must be anthropic, openai or both" });
+    if (raw.switchAdapters !== undefined && typeof raw.switchAdapters !== "boolean") errors.push({ field: `${at}.switchAdapters`, message: "Must be true or false" });
+    // With a backend, the API, prefix and address come from it (checked against the company's backends on save). A quota
+    // pool needs none: each model's backend comes from its prefix.
+    if (isText(raw.backend) || raw.kind === "quota") {
       pools.push({ ...(raw as unknown as PoolConfig), mode: (raw.mode as PoolConfig["mode"]) ?? "observe", scope: "instance", hosts: [], alertAfterMinutes: (raw.alertAfterMinutes as number | undefined) ?? DEFAULT_ALERT_AFTER_MINUTES });
       validateCommon(raw, at, errors);
       return;
@@ -164,6 +200,12 @@ export const validatePools = (input: unknown): ValidationResult => {
       else if (to.id === p.id) errors.push({ field, message: "A pool can't overflow to itself" });
       else if (p.privacy === "private" && to.privacy === "shared") errors.push({ field, message: `Private pool "${p.name}" can't overflow to shared pool "${to.name}"` });
     });
+  });
+  pools.forEach((p, i) => {
+    if (!p.fallbackPool) return;
+    const target = pools.find((q) => q.id === p.fallbackPool);
+    if (!target) errors.push({ field: `pools[${i}].fallbackPool`, message: "That pool doesn't exist" });
+    else if (p.privacy === "private" && target.privacy === "shared") errors.push({ field: `pools[${i}].fallbackPool`, message: "A private pool can't fall back to a shared one" });
   });
   return errors.length ? { ok: false, errors } : { ok: true, pools };
 };

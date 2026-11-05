@@ -50,4 +50,40 @@ describe("harnessConfig", () => {
       pool: { options: { baseURL: "http://mac:1235/v1", apiKey: "{env:MAC_API_KEY}" }, models: { local: { id: "qwen" } } },
     });
   });
+
+  it("engine and quota pools: one LiteLLM endpoint serves both, and a pool behind another endpoint is flagged", () => {
+    const jd = [
+      { id: "litellm", name: "LiteLLM", type: "litellm" as const, baseUrl: "https://proxy.example.com", prefix: "litellm/" },
+      { id: "zen", name: "OpenCode Zen", type: "opencode" as const, prefix: "opencode/" },
+      { id: "mbp", name: "MBP", type: "omlx" as const, baseUrl: "http://mac:1235", reachVia: "litellm", reachModel: "litellm/mbp" },
+      { id: "ct118", name: "CT118", type: "llamacpp" as const, baseUrl: "http://gpu:8091", reachVia: "litellm", reachModel: "litellm/vm" },
+    ];
+    const r = harnessConfig([
+      pool("local", { kind: "engine", engines: [{ engine: "mbp" }, { engine: "ct118" }], patterns: [] }),
+      pool("free", { kind: "quota", backend: "litellm", patterns: ["litellm/free"] }),
+      pool("direct-free", { kind: "quota", backend: "zen", patterns: ["opencode/beam-free"] }),
+    ], jd);
+    expect(r.provider).toEqual({
+      pool: {
+        npm: "@ai-sdk/openai-compatible", name: "Model capacity pools",
+        options: { baseURL: "https://proxy.example.com/v1", apiKey: "{env:LITELLM_API_KEY}" },
+        models: {
+          local: { name: "local (model capacity pool)", id: "mbp", limit: { context: 131072, output: 8192 } },
+          free: { name: "free (model capacity pool)", id: "free", limit: { context: 131072, output: 8192 } },
+        },
+      },
+    });
+    expect(r.warnings[0]).toContain("direct-free goes through OpenCode Zen");
+  });
+
+  it("an engine reached directly gets its own provider, and the fallback can go straight to it", () => {
+    const r = harnessConfig([pool("local", { kind: "engine", engines: [{ engine: "mac" }], patterns: [] })], [
+      { id: "mac", name: "Mac", type: "omlx" as const, baseUrl: "http://mac:1235", prefix: "omlx/", reachVia: "direct", reachModel: "omlx/qwen" },
+    ]);
+    expect(r.provider).toMatchObject({
+      omlx: { options: { baseURL: "http://mac:1235/v1" }, models: { qwen: { name: "omlx/qwen" } } },
+      pool: { options: { baseURL: "http://mac:1235/v1", apiKey: "{env:MAC_API_KEY}" }, models: { local: { id: "qwen" } } },
+    });
+  });
 });
+

@@ -15,7 +15,22 @@ export interface ProbeResult {
   up: boolean;
   slotsTotal?: number;
   slotsBusy?: number;
+  // Requests the server has accepted but not started (oMLX, vLLM).
+  waiting?: number;
+  // What the engine's requests are doing right now, when the server says (llama.cpp /slots, oMLX admin activity).
+  stages?: EngineStages;
   error?: string;
+}
+
+export interface EngineStages {
+  prefill: number;
+  decode: number;
+  waiting?: number;
+  // Prompt tokens processed so far out of the total, across requests in prefill.
+  prefillDone?: number;
+  prefillTotal?: number;
+  // Combined generation speed of the requests decoding, tokens per second.
+  decodeTps?: number;
 }
 
 export class ProbeError extends Error {}

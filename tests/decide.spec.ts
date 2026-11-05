@@ -213,3 +213,10 @@ describe("mode and alerts", () => {
     expect(kinds(decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("t1")] })), "overflow")).toEqual([]);
   });
 });
+
+describe("held tasks whose wake-up started no run (plain pools)", () => {
+  it("are passed over, and the slot goes to the next one in line", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 1 })], wakeCooldown: { first: "2099-01-01T00:00:00.000Z" } }, heldTask("first", { heldAt: minutesAgo(9) }), heldTask("second", { heldAt: minutesAgo(5) }));
+    expect(releases(decide(s))).toEqual(["second"]);
+  });
+});

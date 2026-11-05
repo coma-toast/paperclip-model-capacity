@@ -1,3 +1,4 @@
+import { readOmlxStatus } from "./omlx.js";
 import type { EngineKind } from "../types.js";
 import { getJson, getText, request, type ProbeContext } from "./http.js";
 import { sumGauge } from "./vllm.js";
@@ -70,6 +71,22 @@ const inspectOpenAi = async (pc: ProbeContext): Promise<Omit<InspectResult, "eng
   };
 };
 
+const inspectOmlx = async (pc: ProbeContext): Promise<Omit<InspectResult, "engine" | "up">> => {
+  const status = await readOmlxStatus(pc).catch(() => undefined);
+  if (!status || typeof status.active_requests !== "number") {
+    const base = await inspectOpenAi(pc);
+    return { ...base, summary: `${base.models.length} model${base.models.length === 1 ? "" : "s"} offered (/api/status refused or missing: save the server's API key to see busy requests)` };
+  }
+  const loaded = status.loaded_models ?? [];
+  const body = await getJson<{ data?: { id: string }[] }>(pc, "/v1/models").catch(() => undefined);
+  const ids = (body?.data ?? []).map((m) => m.id);
+  return {
+    models: (ids.length ? ids : loaded).slice(0, MAX_MODELS).map((name) => ({ name, ...(loaded.includes(name) ? { state: "loaded" } : {}) })),
+    requests: { running: status.active_requests, waiting: status.waiting_requests ?? 0 },
+    summary: `${status.active_requests} running, ${status.waiting_requests ?? 0} waiting · ${loaded.length} loaded${status.model_memory_used_formatted ? ` (${status.model_memory_used_formatted} of ${status.model_memory_max_formatted})` : ""}`,
+  };
+};
+
 const inspectVllm = async (pc: ProbeContext): Promise<Omit<InspectResult, "engine" | "up">> => {
   const metrics = await getText(pc, "/metrics");
   const running = Math.round(sumGauge(metrics, "vllm:num_requests_running") ?? 0);
@@ -93,7 +110,7 @@ const inspectLmStudio = async (pc: ProbeContext): Promise<Omit<InspectResult, "e
 };
 
 const INSPECTORS: Readonly<Record<EngineKind, (pc: ProbeContext) => Promise<Omit<InspectResult, "engine" | "up">>>> = {
-  llamacpp: inspectLlamaCpp, ollama: inspectOllama, openai: inspectOpenAi, vllm: inspectVllm, lmstudio: inspectLmStudio,
+  llamacpp: inspectLlamaCpp, ollama: inspectOllama, openai: inspectOpenAi, vllm: inspectVllm, lmstudio: inspectLmStudio, omlx: inspectOmlx,
 };
 
 // GET-only, like the probes (E7); a failure is reported, never thrown.
