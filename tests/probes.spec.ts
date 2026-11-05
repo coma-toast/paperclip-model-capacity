@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { nextStatus, probeAll, runProbe } from "../src/probes/index.js";
+import { fitStages } from "../src/probes/omlx.js";
 import { sumGauge } from "../src/probes/vllm.js";
 import type { EngineKind, HostStatus } from "../src/types.js";
 import { host, pool } from "./fixtures/snapshot.js";
@@ -29,7 +30,7 @@ const probe = async (engine: EngineKind, routes: Routes, opts: { authHeader?: st
 describe("engine probes", () => {
   it("llama.cpp: health plus slot count and busy slots", async () => {
     const { result } = await probe("llamacpp", llamaCppRoutes([true, false, false]));
-    expect(result).toEqual({ up: true, slotsTotal: 3, slotsBusy: 1 });
+    expect(result).toEqual({ up: true, slotsTotal: 3, slotsBusy: 1, stages: { prefill: 1, decode: 0 } });
   });
 
   it("llama.cpp: up without slot data when /slots is disabled", async () => {
@@ -153,5 +154,25 @@ describe("sumGauge", () => {
     const text = '# x 9\nvllm:num_requests_running{a="1"} 2\nvllm:num_requests_running_total 7\nvllm:num_requests_running{a="2"} NaN\n';
     expect(sumGauge(text, "vllm:num_requests_running")).toBe(2);
     expect(sumGauge("", "vllm:num_requests_running")).toBeUndefined();
+  });
+});
+
+describe("llama.cpp slot stages", () => {
+  it("counts busy slots with no tokens yet as prefill (with progress) and the rest as decode", async () => {
+    const { slotStages } = await import("../src/probes/llamacpp.js");
+    expect(slotStages([
+      { id: 0, is_processing: true, n_prompt_tokens: 40000, n_prompt_tokens_processed: 12000, next_token: [{ n_decoded: 0 }] },
+      { id: 1, is_processing: true, n_prompt_tokens: 900, n_prompt_tokens_processed: 900, next_token: [{ n_decoded: 57 }] },
+      { id: 2, is_processing: false, next_token: [{ n_decoded: 0 }] },
+    ])).toEqual({ prefill: 1, decode: 1, prefillDone: 12000, prefillTotal: 40000 });
+  });
+});
+
+describe("fitStages", () => {
+  it("trims oMLX's activity to its request count, prefill first, and leaves a fitting one alone", () => {
+    expect(fitStages({ prefill: 1, decode: 1, prefillDone: 384, prefillTotal: 31_000, decodeTps: 12 }, 1)).toEqual({ prefill: 0, decode: 1, decodeTps: 12 });
+    expect(fitStages({ prefill: 1, decode: 1, decodeTps: 12 }, 0)).toEqual({ prefill: 0, decode: 0, decodeTps: undefined });
+    const fits = { prefill: 1, decode: 1, decodeTps: 12 };
+    expect(fitStages(fits, 2)).toBe(fits);
   });
 });

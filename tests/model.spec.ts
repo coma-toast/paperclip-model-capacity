@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { effectiveModel, isPinned } from "../src/scheduler/model.js";
+import { canRun, modelProvider } from "../src/scheduler/model.js";
 import type { OverrideRecord } from "../src/types.js";
 
 const agent = { id: "agent-1", adapterConfig: { model: "gateway/gpu" } };
@@ -53,6 +54,10 @@ describe("isPinned", () => {
     expect(isPinned(issue("agent-1", "gateway/private"), {})).toBe(true);
   });
 
+  it("is not pinned when the override is a pool's own name (a task moved to that pool)", () => {
+    expect(isPinned(issue("agent-1", "pool/sota"), {})).toBe(false);
+  });
+
   it("is not pinned when the plugin set the override", () => {
     expect(isPinned(issue("agent-1", "free/llama"), { "issue-1": record() })).toBe(false);
   });
@@ -69,3 +74,16 @@ describe("isPinned", () => {
     expect(isPinned(issue(null, "gateway/private"), {})).toBe(false);
   });
 });
+
+describe("modelProvider and canRun", () => {
+  it("tells a model's subscription from its name, and which adapters can run it", () => {
+    expect(["claude-haiku-5-5", "litellm/claude-sonnet-5-5", "gpt-5.6-terra", "openai/o4-mini", "gpt-5.3-codex", "litellm/vm"].map(modelProvider))
+      .toEqual(["anthropic", "anthropic", "openai", "openai", "openai", undefined]);
+    expect(canRun("claude_local", "claude-haiku-5-5")).toBe(true);
+    expect(canRun("claude_local", "gpt-5.6-terra")).toBe(false);
+    expect(canRun("codex_local", "gpt-5.6-terra")).toBe(true);
+    expect(canRun("opencode_local", "gpt-5.6-terra")).toBe(true);
+    expect(canRun(undefined, "claude-haiku-5-5")).toBe(true);
+  });
+});
+

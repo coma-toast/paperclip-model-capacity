@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Issue, PluginCapability } from "@paperclipai/plugin-sdk";
+import type { Agent, Issue, PluginCapability } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
 import { QUEUE_ORIGIN_KIND, createExecutor } from "../src/executor.js";
@@ -162,6 +162,95 @@ describe("manual changes win (C5, C7)", () => {
     await exec.reconcileHolds(snap);
     expect(Object.keys(await store.holds.get())).toEqual(["t1"]);
   });
+
+  it("frees and wakes a task whose pool was removed, then cancels that pool's queue task", async () => {
+    const { ctx, exec, store, snap, harness } = setup("enforce", { label: "lbl-queue" });
+    await exec.execute([holdAction("t1")], snap);
+    const blockerId = (await store.queueBlockers("c1").get()).gpu;
+    await exec.reconcileHolds({ ...snap, pools: [pool("other", { companyId: "c1" })] });
+    expect(await store.holds.get()).toEqual({});
+    expect(await blockerIds(ctx, "t1")).toEqual([]);
+    expect((await ctx.issues.get("t1", "c1"))?.labelIds).toEqual([]);
+    expect(harness.activity.map((a) => a.message)).toContain("Model capacity: left the gpu queue (its pool was removed)");
+    expect((await ctx.issues.get(blockerId, "c1"))?.status).toBe("cancelled");
+    expect(await store.queueBlockers("c1").get()).toEqual({});
+  });
+
+  it("keeps the queue of a pool the snapshot missed but the saved config still lists", async () => {
+    const { exec, store, snap } = setup();
+    await exec.execute([holdAction("t1")], snap);
+    await store.companyPools("c1").set([pool("gpu")]);
+    await exec.reconcileHolds({ ...snap, pools: [] });
+    expect(Object.keys(await store.holds.get())).toEqual(["t1"]);
+    expect(Object.keys(await store.queueBlockers("c1").get())).toEqual(["gpu"]);
+  });
+
+  it("moves a waiting task to another pool: new model, that pool's queue, same place in line", async () => {
+    const { ctx, exec, store, snap } = setup();
+    await exec.execute([holdAction("t1")], snap);
+    const before = (await store.holds.get()).t1;
+    await store.overrides.set({ t1: { issueId: "t1", agentId: "a1", model: "gpu/a", original: null, fromPoolId: "gpu", toPoolId: "gpu", at: NOW } });
+    await exec.moveToPool("t1", "c1", pool("cpu", { agentModel: "pool/cpu" }));
+    const after = (await store.holds.get()).t1;
+    const cpuBlocker = (await store.queueBlockers("c1").get()).cpu;
+    expect(after).toMatchObject({ poolId: "cpu", blockerId: cpuBlocker, heldAt: before.heldAt });
+    expect(await blockerIds(ctx, "t1")).toEqual([cpuBlocker]);
+    expect((await ctx.issues.get("t1", "c1"))?.assigneeAdapterOverrides?.adapterConfig?.model).toBe("pool/cpu");
+    expect(await store.overrides.get()).toEqual({});
+  });
+
+  it("applies queued moves from board users, drops them once tried, and returns the ones that failed", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    await store.pendingMoves.set({
+      t1: { issueId: "t1", companyId: "c1", poolId: "cpu", userId: "u1", at: NOW },
+      t2: { issueId: "t2", companyId: "c1", poolId: "cpu", userId: "u1", at: NOW },
+    });
+    const failed = await exec.applyPendingMoves(async () => [pool("cpu", { agentModel: "pool/cpu" })]);
+    expect((await store.holds.get()).t1.poolId).toBe("cpu");
+    expect((await ctx.issues.get("t1", "c1"))?.assigneeAdapterOverrides?.adapterConfig?.model).toBe("pool/cpu");
+    expect(failed).toEqual([{ issueId: "t2", companyId: "c1", message: "That task isn't waiting" }]);
+    expect(await store.pendingMoves.get()).toEqual({});
+  });
+
+  it("refuses to move a task that isn't waiting", async () => {
+    const { exec } = setup();
+    await expect(exec.moveToPool("t2", "c1", pool("cpu", { agentModel: "pool/cpu" }))).rejects.toThrow("isn't waiting");
+  });
+
+  it("cancels an older copy of a routine still waiting in the queue, keeping the newest", async () => {
+    const { ctx, exec, store, snap } = setup();
+    await exec.execute([holdAction("t1")], snap);
+    const copies = {
+      ...snap,
+      tasks: [
+        task("t1", { routineKey: "r1|fp", createdAt: "2026-11-01T13:00:00.000Z" }),
+        task("t2", { routineKey: "r1|fp", createdAt: "2026-11-02T17:00:00.000Z" }),
+      ],
+    };
+    await exec.retireStaleRoutineCopies(copies);
+    expect((await ctx.issues.get("t1", "c1"))?.status).toBe("cancelled");
+    expect((await ctx.issues.get("t2", "c1"))?.status).not.toBe("cancelled");
+    expect(await store.holds.get()).toEqual({});
+    expect(await blockerIds(ctx, "t1")).toEqual([]);
+  });
+
+  it("leaves routine copies alone when the older one has a run or isn't held", async () => {
+    const { ctx, exec, snap } = setup();
+    await exec.retireStaleRoutineCopies({
+      ...snap,
+      tasks: [task("t1", { routineKey: "r1|fp", createdAt: "2026-11-01T13:00:00.000Z" }), task("t2", { routineKey: "r1|fp", createdAt: "2026-11-02T17:00:00.000Z" })],
+    });
+    expect((await ctx.issues.get("t1", "c1"))?.status).toBe("todo");
+  });
+
+  it("keeps the queue of a company the snapshot skipped", async () => {
+    const { exec, store, snap } = setup();
+    await exec.execute([holdAction("t1")], snap);
+    const diagnostics = { runSource: "heartbeat_runs" as const, activeRunRows: 0, unmatchedRunModels: [], runsWithoutAgent: 0, skippedCompanies: ["c1"] };
+    await exec.reconcileHolds({ ...snap, pools: [], diagnostics });
+    expect(Object.keys(await store.holds.get())).toEqual(["t1"]);
+  });
 });
 
 describe("wake confirmation (C3)", () => {
@@ -228,5 +317,114 @@ describe("placement (P2.6)", () => {
     await exec.execute([placeAction("t2", "l/vm")], { ...snap, pools: [pool("c1:gpu", { mode: "observe" })] });
     expect((await ctx.issues.get("t2", "c1"))?.assigneeAdapterOverrides ?? null).toBeNull();
     expect(await store.overrides.get()).toEqual({});
+  });
+});
+
+describe("release puts a held task's status back", () => {
+  it("sets a task left blocked by the hold back to its status from before, and wakes it", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    expect((await store.holds.get()).t1.statusBefore).toBe("todo");
+    await ctx.issues.update("t1", { status: "blocked" }, "c1");
+    await exec.execute([releaseAction("t1")], snap);
+    expect((await ctx.issues.get("t1", "c1"))?.status).toBe("todo");
+    expect(Object.keys(await store.released.get())).toEqual(["t1"]);
+  });
+
+  it("leaves a task blocked by something else blocked, and reserves no slot when no run starts", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    await ctx.issues.relations.addBlockers("t1", ["t2"], "c1");
+    await ctx.issues.update("t1", { status: "blocked" }, "c1");
+    (ctx.issues as { requestWakeup: unknown }).requestWakeup = async () => ({ queued: false });
+    await exec.execute([releaseAction("t1")], snap);
+    expect((await ctx.issues.get("t1", "c1"))?.status).toBe("blocked");
+    expect(await store.released.get()).toEqual({});
+    expect(Object.keys(await store.holds.get())).toEqual(["t1"]);
+    expect(Object.keys(await store.wakeCooldown.get())).toEqual(["t1"]);
+  });
+
+  it("puts the hold back without a new comment and skips the task for a while when its wake-up starts no run", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    (ctx.issues as { requestWakeup: unknown }).requestWakeup = async () => ({ queued: false });
+    const comments = (await ctx.issues.listComments("t1", "c1")).length;
+    await exec.execute([releaseAction("t1")], snap);
+    expect((await store.holds.get()).t1).toBeDefined();
+    expect((await ctx.issues.relations.get("t1", "c1")).blockedBy).toHaveLength(1);
+    expect((await ctx.issues.listComments("t1", "c1")).length).toBe(comments);
+    expect(Date.parse((await store.wakeCooldown.get()).t1)).toBeGreaterThan(Date.parse(NOW));
+  });
+});
+
+describe("switchAdapter", () => {
+  const agents = [
+    { id: "a1", companyId: "c1", name: "Raymond", status: "idle", adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-5-5", instructionsFilePath: "/i/a1/AGENTS.md", paperclipSkillSync: { desiredSkills: ["x"] }, env: { AST_MCP_PORT: "7822", CLAUDE_CONFIG_DIR: "/c" } } },
+    { id: "a2", companyId: "c1", name: "Patrick", status: "idle", adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.6-terra", instructionsFilePath: "/i/a2/AGENTS.md", engine: "cli", extraArgs: ["--skip-git-repo-check"], env: { PATH: "/p" } } },
+  ] as unknown as Agent[];
+  const action: Action = { kind: "switchAdapter", agentId: "a1", companyId: "c1", poolId: "gpu", fromAdapterType: "claude_local", toAdapterType: "codex_local", model: "gpt-5.6-terra", reason: "own subscription used up" };
+
+  it("moves an agent to Codex and that side's model with its own instructions and skills, and keeps its Claude settings to switch back", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...CAPS, "agents.read"] });
+    harness.seed({ agents, issues: [] });
+    harness.setConfig({ quotaToken: { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" } });
+    const sent: { url: string; body: Record<string, unknown> }[] = [];
+    (harness.ctx as { http: { fetch: unknown } }).http = { fetch: async (url: string, init?: RequestInit) => {
+      sent.push({ url, body: JSON.parse(String(init?.body)) });
+      return new Response("{}", { status: 200 });
+    } };
+    const store = createStore(harness.ctx.state);
+    const exec = createExecutor({ ctx: harness.ctx, store, queueLabelId: async () => undefined, now: new Date(NOW) });
+    const entries = await exec.execute([action], snapshot({ pools: [pool("gpu", { mode: "enforce" })] }));
+    expect(entries[0]).toMatchObject({ applied: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].url).toBe("http://127.0.0.1:3100/api/agents/a1");
+    expect(sent[0].body).toEqual({
+      adapterType: "codex_local", replaceAdapterConfig: true,
+      adapterConfig: { model: "gpt-5.6-terra", instructionsFilePath: "/i/a1/AGENTS.md", paperclipSkillSync: { desiredSkills: ["x"] }, engine: "cli", extraArgs: ["--skip-git-repo-check"], env: { PATH: "/p", AST_MCP_PORT: "7822" } },
+    });
+    expect((await store.adapterProfiles("c1").get()).a1.claude_local).toEqual(agents[0].adapterConfig);
+  });
+
+  it("doesn't switch without the board token", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...CAPS, "agents.read"] });
+    harness.seed({ agents, issues: [] });
+    const store = createStore(harness.ctx.state);
+    const exec = createExecutor({ ctx: harness.ctx, store, queueLabelId: async () => undefined, now: new Date(NOW) });
+    const entries = await exec.execute([action], snapshot({ pools: [pool("gpu", { mode: "enforce" })] }));
+    expect(entries[0]).toMatchObject({ applied: false });
+    expect(await store.adapterProfiles("c1").get()).toEqual({});
+  });
+});
+
+describe("drainRun", () => {
+  it("cancels the run with the board token and holds its task first in line, saying why", async () => {
+    const { harness, store, ctx } = setup();
+    harness.setConfig({ quotaToken: { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" } });
+    const sent: string[] = [];
+    (harness.ctx as { http: { fetch: unknown } }).http = { fetch: async (url: string) => {
+      sent.push(url);
+      return new Response("{}", { status: 200 });
+    } };
+    const exec = createExecutor({ ctx: harness.ctx, store, queueLabelId: async () => undefined, now: new Date(NOW) });
+    const r = run("t1", { model: "l/mbp", startedAt: minutesAgo(45) });
+    await exec.drainRun(r, "MBP", pool("gpu"), snapshot({ tasks: [task("t1", { status: "in_progress" })] }), false);
+    expect(sent).toEqual(["http://127.0.0.1:3100/api/heartbeat-runs/run-t1/cancel"]);
+    const held = (await store.holds.get()).t1;
+    expect(held).toMatchObject({ poolId: "gpu", heldAt: minutesAgo(45), statusBefore: "in_progress" });
+    expect(await blockerIds(ctx, "t1")).toHaveLength(1);
+    const comments = await ctx.issues.listComments("t1", "c1");
+    expect(comments.at(-1)?.body).toMatch(/^Moved off MBP \(its run hadn't finished 30 min/);
+  });
+
+  it("leaves the task alone when Paperclip refuses the cancel", async () => {
+    const { harness, store } = setup();
+    harness.setConfig({ quotaToken: { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" } });
+    (harness.ctx as { http: { fetch: unknown } }).http = { fetch: async () => new Response("nope", { status: 403 }) };
+    const exec = createExecutor({ ctx: harness.ctx, store, queueLabelId: async () => undefined, now: new Date(NOW) });
+    await expect(exec.drainRun(run("t1", { model: "l/mbp" }), "MBP", pool("gpu"), snapshot(), true)).rejects.toThrow(/refused to cancel the run \(403\)/);
+    expect((await store.holds.get()).t1).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { StatusBadge, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 
 import type { PoolSummary } from "../../api.js";
+import { untilText } from "./usage.js";
 
 export const POLL_MS = 15_000;
 
@@ -31,12 +32,28 @@ export const HostDots = ({ hosts }: { hosts: PoolSummary["hosts"] }) =>
     <span title="No hosts: limited by the pool limit only">—</span>
   );
 
-export const PoolBadges = ({ pool }: { pool: PoolSummary }) => (
-  <span style={{ display: "inline-flex", gap: 4 }}>
+// What a pool's paused models ran out of, for its badge: money, a subscription's limit, or a request quota.
+export const usedUpLabel = (reasons: string[]) =>
+  reasons.some((r) => /subscription/i.test(r) && /used up/i.test(r)) ? "subscription limit"
+    : reasons.some((r) => /credit|spend|budget|key limit/i.test(r) && /used up/i.test(r)) ? "out of credit"
+      : reasons.some((r) => /requests/i.test(r) && /used up/i.test(r)) ? "requests used up"
+        : undefined;
+
+export const PoolBadges = ({ pool, onAlerts, pausedUntil, usedUp }: { pool: PoolSummary; onAlerts?: () => void; pausedUntil?: string; usedUp?: string }) => (
+  <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
     {pool.mode === "observe" ? <StatusBadge label="observe" status="info" /> : null}
     {pool.disabled ? <StatusBadge label={pool.inUse ? `disabled · ${pool.inUse} draining` : "disabled · drained"} status={pool.inUse ? "pending" : "info"} /> : null}
     {pool.onHold ? <StatusBadge label="on hold" status="pending" /> : null}
-    {pool.openAlerts ? <StatusBadge label={`${pool.openAlerts} alert${pool.openAlerts > 1 ? "s" : ""}`} status="error" /> : null}
+    {usedUp ? <StatusBadge label={usedUp} status="error" /> : null}
+    {pool.pausedModels ? <StatusBadge label={`${pool.pausedModels} paused${pausedUntil ? ` · next back in ${untilText(pausedUntil)}` : ""}`} status="pending" /> : null}
+    {pool.openAlerts ? (
+      onAlerts ? (
+        <button type="button" onClick={onAlerts} title="Show alerts and what to do"
+          style={{ border: "1px solid rgba(239, 68, 68, 0.5)", background: "rgba(239, 68, 68, 0.12)", color: "#ef4444", borderRadius: 999, padding: "1px 8px", font: "inherit", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          {pool.openAlerts} alert{pool.openAlerts > 1 ? "s" : ""}
+        </button>
+      ) : <StatusBadge label={`${pool.openAlerts} alert${pool.openAlerts > 1 ? "s" : ""}`} status="error" />
+    ) : null}
   </span>
 );
 

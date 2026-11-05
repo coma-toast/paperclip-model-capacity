@@ -24,7 +24,7 @@ const AGENTS = [
   agent("a5", "c1", "other/model"),
 ];
 const ISSUES = [
-  issue("i1", "c1", "a1"),
+  issue("i1", "c1", "a1", { title: "Fix the widget", description: "Long first post. ".repeat(60) }),
   issue("i2", "c1", "a1", { priority: "high" }),
   issue("i3", "c1", "a1", { assigneeAdapterOverrides: { adapterConfig: { model: "free/llama" } } }),
   issue("i4", "c1", "a2", { status: "in_progress" }),
@@ -65,6 +65,14 @@ describe("buildSnapshot", () => {
     expect(byPool(s.runs)).toEqual({ "c1:gpu": 1, "c2:gpu": 1, "c2:free": 1 });
   });
 
+  it("gives each run its task's title and the start of its first post, for the engine runs dialog", async () => {
+    const { deps } = await setup();
+    const r1 = (await buildSnapshot(deps)).runs.find((r) => r.runId === "r1")!;
+    expect(r1.issueTitle).toBe("Fix the widget");
+    expect(r1.issueDescription).toHaveLength(600);
+    expect((await buildSnapshot(deps)).runs.find((r) => r.runId === "r3")!.issueDescription).toBeUndefined();
+  });
+
   it("leaves out tasks of paused or stopped agents, which can't be woken", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
     harness.seed({ companies: [company("c1"), company("c2")], agents: AGENTS.map((a) => (a.id === "a1" ? ({ ...a, status: "paused" }) as Agent : a)), issues: ISSUES });
@@ -103,6 +111,163 @@ describe("buildSnapshot", () => {
     const { deps } = await setup([{ ...row("old", "c1", "a1", "i1", "queued"), created_at: minutesBefore(30) }, { ...row("new", "c1", "a2", "i4", "queued"), created_at: minutesBefore(2) }]);
     const s = await buildSnapshot(deps);
     expect(s.runs.map((r) => [r.runId, r.stalled ?? false])).toEqual([["old", true], ["new", false]]);
+  });
+
+  it("lets only an idle agent's oldest queued run take a slot; its later queued runs wait for the agent", async () => {
+    const queued = (id: string, issueId: string, at: string): RunRow => ({ ...row(id, "c1", "a1", issueId, "queued"), started_at: null, created_at: at });
+    const { deps } = await setup([queued("late", "i2", new Date(Date.parse(NOW) - 60_000).toISOString()), queued("early", "i1", new Date(Date.parse(NOW) - 120_000).toISOString())]);
+    const s = await buildSnapshot(deps);
+    expect(Object.fromEntries(s.runs.map((r) => [r.runId, r.waitingOnAgent ?? false]))).toEqual({ early: false, late: true });
+  });
+
+  it("marks quota models used up from an empty usage meter and from repeated rate-limit failures", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [agent("a2", "c1", "free/llama"), agent("a9", "c1", "zen/x")], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([
+      pool("free", { kind: "quota", backend: "or", patterns: ["free/llama", "free/qwen"] }),
+      pool("zen", { kind: "quota", backend: "zen", patterns: ["zen/x"] }),
+    ]);
+    await store.companyUsage("c1").set({ or: { backendId: "or", sampledAt: NOW, ok: true, notes: [], meters: [{ label: "Credits", unit: "usd", used: 10, limit: 10, remaining: 0, resetAt: "2026-11-01T00:00:00Z" }] } });
+    const failures = [0, 1].map((i) => ({ company_id: "c1", agent_id: "a9", issue_id: null, error: "429 Too Many Requests", finished_at: new Date(Date.parse(NOW) - (2 + i) * 60_000).toISOString() }));
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => failures, now: new Date(NOW),
+      backendsFor: async () => [{ id: "or", name: "OR", type: "openrouter" }, { id: "zen", name: "Zen", type: "opencode" }],
+    });
+    expect(Object.keys(s.exhausted ?? {}).sort()).toEqual(["c1|free/llama", "c1|free/qwen", "c1|zen/x"]);
+    expect(s.exhausted?.["c1|free/llama"]).toMatchObject({ until: "2026-11-01T00:00:00Z", reason: "Credits used up" });
+    expect(s.exhausted?.["c1|zen/x"]).toMatchObject({ reason: "2 rate-limit failures" });
+  });
+
+  it("pauses only the free models when the free requests are used up, and only the paid ones when credits are", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([pool("or", { kind: "quota", backend: "or", patterns: ["or/llama:free", "or/jev"] })]);
+    const meters = (free: number, credits: number) => [
+      { label: "Account credits", unit: "usd" as const, used: 10 - credits, limit: 10, remaining: credits, appliesTo: "paid" as const },
+      { label: "Free requests today", unit: "requests" as const, used: 1000 - free, limit: 1000, remaining: free, resetAt: "2026-11-01T00:00:00.000Z", appliesTo: "free" as const },
+    ];
+    const run = async (free: number, credits: number) => {
+      await store.companyUsage("c1").set({ or: { backendId: "or", sampledAt: NOW, ok: true, notes: [], meters: meters(free, credits) } });
+      const s = await buildSnapshot({
+        ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+        backendsFor: async () => [{ id: "or", name: "OR", type: "openrouter" }],
+      });
+      return s.exhausted ?? {};
+    };
+    const freeOut = await run(0, 9);
+    expect(Object.keys(freeOut)).toEqual(["c1|or/llama:free"]);
+    expect(freeOut["c1|or/llama:free"]).toMatchObject({ until: "2026-11-01T00:00:00.000Z", reason: "Free requests today used up" });
+    expect(Object.keys(await run(500, 0))).toEqual(["c1|or/jev"]);
+  });
+
+  it("doesn't pause a pool set to go over quota when its backend reports the quota used up", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([
+      pool("gh", { kind: "quota", backend: "gh", patterns: ["gh/sonnet"], allowOverQuota: true }),
+      pool("gh2", { kind: "quota", backend: "gh", patterns: ["gh/haiku"] }),
+    ]);
+    await store.companyUsage("c1").set({ gh: { backendId: "gh", sampledAt: NOW, ok: true, notes: [], meters: [{ label: "Premium requests", unit: "requests", used: 1500, limit: 1500, remaining: 0 }] } });
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "gh", name: "Copilot", type: "copilot" }],
+    });
+    expect(Object.keys(s.exhausted ?? {})).toEqual(["c1|gh/haiku"]);
+  });
+
+  it("pauses each model of a pool on both subscriptions with its own subscription", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([pool("cheap", { kind: "quota", backend: "p", patterns: ["p/claude-haiku-5-5", "p/gpt-5.6-terra"], subscription: "both" })]);
+    await store.subscriptionWindows("c1").set({
+      sampledAt: NOW, ok: true,
+      accounts: [{ provider: "anthropic", ok: true, windows: [{ label: "Weekly limit", usedPercent: 100, resetsAt: "2099-01-01T00:00:00Z" }] }, { provider: "openai", ok: true, windows: [{ label: "Weekly limit", usedPercent: 40, resetsAt: "2099-01-01T00:00:00Z" }] }],
+    });
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "p", name: "P", type: "openai" }],
+    });
+    expect(Object.keys(s.exhausted ?? {})).toEqual(["c1|p/claude-haiku-5-5"]);
+    await store.companyPools("c1").set([pool("cheap", { kind: "quota", backend: "p", patterns: ["p/claude-haiku-5-5", "p/gpt-5.6-terra"], subscription: "both", allowOverQuota: true })]);
+    const over = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "p", name: "P", type: "openai" }],
+    });
+    expect(over.exhausted).toEqual({});
+  });
+
+  it("keeps a task the plugin placed in the pool that placed it when another pool lists the same model", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    const placed = { adapterConfig: { model: "claude-haiku-5-5" } };
+    harness.seed({
+      companies: [company("c1")], agents: [agent("a1", "c1", "pool/cheap"), agent("a2", "c1", "claude-haiku-5-5")],
+      issues: [issue("t1", "c1", "a1", { assigneeAdapterOverrides: placed }), issue("t2", "c1", "a2")],
+    });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([
+      pool("haiku", { kind: "quota", backend: "s", patterns: ["claude-haiku-5-5"] }),
+      pool("cheap", { kind: "quota", backend: "s", patterns: ["gpt-5.6-terra", "claude-haiku-5-5"] }),
+    ]);
+    await store.overrides.set({ t1: { issueId: "t1", agentId: "a1", model: "claude-haiku-5-5", original: null, fromPoolId: "c1:cheap", toPoolId: "c1:cheap", at: NOW } });
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "s", name: "S", type: "other" }],
+    });
+    expect(Object.fromEntries(s.tasks.map((t) => [t.issueId, t.poolId]))).toEqual({ t1: "c1:cheap", t2: "c1:haiku" });
+  });
+
+  it("pauses each model of a pool without a backend on its own backend's limits", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([pool("mix", { kind: "quota", patterns: ["openrouter/a:free", "litellm/free", "claude-haiku-5-5"] })]);
+    await store.companyUsage("c1").set({
+      or: { backendId: "or", sampledAt: NOW, ok: true, notes: [], meters: [{ label: "Free requests today", unit: "requests", used: 1000, limit: 1000, remaining: 0, appliesTo: "free" }] },
+      ll: { backendId: "ll", sampledAt: NOW, ok: true, notes: [], meters: [{ label: "Key spend", unit: "usd", used: 3, limit: 20 }] },
+    });
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "or", name: "OR", type: "openrouter" }, { id: "ll", name: "LL", type: "litellm" }],
+    });
+    expect(s.pools[0].placement).toEqual([{ model: "openrouter/a:free", backendId: "or" }, { model: "litellm/free", backendId: "ll" }, { model: "claude-haiku-5-5" }]);
+    expect(Object.keys(s.exhausted ?? {})).toEqual(["c1|openrouter/a:free"]);
+  });
+
+  it("counts agents on a switching pool's name or on one of its models as its agents", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [agent("a1", "c1", "claude-sonnet-5-5"), agent("a2", "c1", "pool/normal"), agent("a3", "c1", "claude-haiku-5-5")], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([pool("normal", { kind: "quota", patterns: ["claude-sonnet-5-5", "gpt-5.6-terra"], subscription: "both", switchAdapters: true })]);
+    const s = await buildSnapshot({ ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW), backendsFor: async () => [] });
+    expect((s.poolAgents ?? []).map((a) => a.id).sort()).toEqual(["a1", "a2"]);
+  });
+
+  it("pauses a LiteLLM alias when every upstream it calls is used up", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "companies.read", "agents.read", "issues.read"] });
+    harness.seed({ companies: [company("c1")], agents: [], issues: [] });
+    const store = createStore(harness.ctx.state);
+    await store.companies.set([{ id: "c1", name: "c1" }]);
+    await store.companyPools("c1").set([pool("free", { kind: "quota", patterns: ["litellm/free", "litellm/mixed"] })]);
+    await store.companyUsage("c1").set({
+      or: { backendId: "or", sampledAt: NOW, ok: true, notes: [], meters: [{ label: "Free requests today", unit: "requests", used: 1000, limit: 1000, remaining: 0, resetAt: "2026-11-04T00:00:00.000Z", appliesTo: "free" }] },
+      ll: { backendId: "ll", sampledAt: NOW, ok: true, notes: [], meters: [], upstreams: { free: ["openrouter/a:free", "openrouter/b:free"], mixed: ["openrouter/a:free", "nvidia_nim/x"] } },
+    });
+    const s = await buildSnapshot({
+      ctx: harness.ctx, store, agents: createAgentCache(harness.ctx), readRuns: async () => [], readFailures: async () => [], now: new Date(NOW),
+      backendsFor: async () => [{ id: "or", name: "OpenRouter", type: "openrouter" }, { id: "ll", name: "LiteLLM", type: "litellm" }],
+    });
+    expect(s.exhausted).toEqual({ "c1|litellm/free": expect.objectContaining({ reason: "Free requests today (OpenRouter) used up", until: "2026-11-04T00:00:00.000Z" }) });
   });
 
   it("marks tasks with a run, the override's pool and pins", async () => {

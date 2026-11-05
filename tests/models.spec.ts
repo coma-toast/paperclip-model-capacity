@@ -98,6 +98,9 @@ describe("list-backend-models action", () => {
       { id: "mac", name: "Mac", type: "omlx", baseUrl: mac.baseUrl, prefix: "omlx/" },
       { id: "gpu", name: "GPU", type: "llamacpp", baseUrl: gpu.baseUrl, prefix: "llamacpp/" },
     ] });
-    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "direct" }, user)).toEqual({ ok: true, source: "local engines", models: ["llamacpp/strata", "omlx/qwen"] });
+    expect(await harness.performAction("list-backend-models", { companyId: "c1", backendId: "direct" }, user)).toEqual({
+      ok: true, source: "local engines", models: ["llamacpp/strata", "omlx/qwen"],
+      prices: { "llamacpp/strata": { free: true }, "omlx/qwen": { free: true } },
+    });
   });
 });

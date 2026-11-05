@@ -1,7 +1,11 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 
-import { backendBaseUrl, backendPrefix, backendsConfigSchema, probeBaseUrl, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
+import { backendBaseUrl, backendPrefix, backendsConfigSchema, probeBaseUrl, backendForModel, createBackendAuth, readBackends, summarizeBackends } from "../src/backends.js";
+import { opencodeCopilotToken } from "../src/opencodeAuth.js";
 import manifest from "../src/manifest.js";
 
 const KEY = { type: "secret_ref", secretId: "11111111-2222-3333-4444-555555555555" };
@@ -40,6 +44,17 @@ describe("backends", () => {
     expect(await auth.headersFor("c1", undefined)).toBeUndefined();
   });
 
+  it("uses opencode's Copilot login for a Copilot backend with no key", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.setConfig({ backends: [{ id: "gh", name: "Copilot", type: "copilot" }] });
+    expect(await createBackendAuth(harness.ctx, Date.now, async () => "gho_x").headersFor("c1", "gh")).toEqual({ Authorization: "Bearer gho_x" });
+    expect(await createBackendAuth(harness.ctx, Date.now, async () => undefined).headersFor("c1", "gh")).toBeUndefined();
+    const dir = await mkdtemp(join(tmpdir(), "oc-"));
+    await writeFile(join(dir, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", refresh: "gho_file", access: "tid=short" } }));
+    expect(await opencodeCopilotToken(join(dir, "auth.json"))).toBe("gho_file");
+    expect(await opencodeCopilotToken(join(dir, "missing.json"))).toBeUndefined();
+  });
+
   it("gives the host's config form a type select and its secret picker for the key", () => {
     const item = backendsConfigSchema.backends.items.properties;
     expect(item.type.enum).toContain("litellm");
@@ -47,3 +62,19 @@ describe("backends", () => {
     expect("type" in item.key).toBe(false);
   });
 });
+
+describe("backendForModel", () => {
+  it("picks the backend whose prefix the model starts with (longest first); bare names match none", () => {
+    const backends = [
+      { id: "litellm", type: "litellm" as const, prefix: "litellm/" },
+      { id: "or", type: "openrouter" as const },
+      { id: "or-free", type: "openrouter" as const, prefix: "openrouter/free/" },
+      { id: "sub", type: "other" as const },
+    ];
+    expect(backendForModel("litellm/free", backends)?.id).toBe("litellm");
+    expect(backendForModel("openrouter/qwen/x", backends)?.id).toBe("or");
+    expect(backendForModel("openrouter/free/x", backends)?.id).toBe("or-free");
+    expect(backendForModel("claude-haiku-5-5", backends)).toBeUndefined();
+  });
+});
+

@@ -3,11 +3,12 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { apiInfo } from "./apis.js";
 import { backendBaseUrl, type Backend } from "./backends.js";
 import { getJson } from "./probes/http.js";
+import { catalogModels, openRouterPrices, type ModelPrice } from "./prices.js";
 
 export const MAX_LISTED_MODELS = 1000;
 
 export type ListModelsResult =
-  | { ok: true; source: string; models: string[] }
+  | { ok: true; source: string; models: string[]; prices?: Record<string, ModelPrice> }
   | { ok: false; error: string };
 
 // OpenAI-style lists live at <base>/v1/models; a base that already ends in /v1 just adds /models.
@@ -20,6 +21,15 @@ export const modelsPath = (baseUrl: string) => {
 export const listBackendModels = async (ctx: PluginContext, backend: Pick<Backend, "type" | "baseUrl" | "name">, headers?: Record<string, string>): Promise<ListModelsResult> => {
   const info = apiInfo(backend.type);
   if (info.listing === "none") return { ok: false, error: `${info.label} has no endpoint to ask.` };
+  // A subscription's models (Copilot) come from the catalogue; they count against its request quota, not per token.
+  if (info.listing === "catalog" && info.catalog) {
+    try {
+      const models = (await catalogModels((u, init) => ctx.http.fetch(u, init), info.catalog)).slice(0, MAX_LISTED_MODELS);
+      return { ok: true, source: "models.dev catalogue", models, prices: Object.fromEntries(models.map((m) => [m, { included: true }])) };
+    } catch (e) {
+      return { ok: false, error: `Couldn't read the models.dev catalogue: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
   const baseUrl = backendBaseUrl(backend);
   if (!baseUrl) return { ok: false, error: `Enter ${backend.name || "the backend"}'s address (e.g. ${info.placeholderUrl}).` };
   let url: URL;
@@ -33,6 +43,7 @@ export const listBackendModels = async (ctx: PluginContext, backend: Pick<Backen
   try {
     let ids: unknown[];
     let source: string;
+    let prices: Record<string, ModelPrice> = {};
     if (info.listing === "ollama") {
       const base = url.toString().replace(/\/+$/, "");
       const body = await getJson<{ models?: { name?: unknown }[] }>({ baseUrl: base, fetch, headers, timeoutMs: 15_000 }, "/api/tags");
@@ -40,12 +51,14 @@ export const listBackendModels = async (ctx: PluginContext, backend: Pick<Backen
       source = `${base}/api/tags`;
     } else {
       const { base, path } = modelsPath(url.toString());
-      const body = await getJson<{ data?: { id?: unknown }[] }>({ baseUrl: base, fetch, headers, timeoutMs: 15_000 }, path);
+      const body = await getJson<{ data?: Parameters<typeof openRouterPrices>[0] }>({ baseUrl: base, fetch, headers, timeoutMs: 15_000 }, path);
       ids = (body.data ?? []).map((m) => m.id);
       source = `${base}${path}`;
+      // OpenRouter-style lists carry each model's price; other servers' entries have none.
+      prices = openRouterPrices(body.data ?? []);
     }
     const models = [...new Set(ids.filter((id): id is string => typeof id === "string"))].sort();
-    return { ok: true, source, models: models.slice(0, MAX_LISTED_MODELS) };
+    return { ok: true, source, models: models.slice(0, MAX_LISTED_MODELS), ...(Object.keys(prices).length ? { prices } : {}) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, error: /returned 401|returned 403/.test(msg) ? `${backend.name || info.label} refused the request (${msg}): check the API key.` : `Couldn't list models: ${msg}` };

@@ -79,6 +79,29 @@ describe("sticky pool settings (P2.6)", () => {
   });
 });
 
+describe("pool kinds and fallback settings (P2.7)", () => {
+  const engine = (id: string, engines: object[], over = {}) => ({ id, name: id, kind: "engine", engines, privacy: "private", ...over });
+  it("accepts an engine pool with ordered, capped engines and rejects an engine in two pools", () => {
+    expect(validatePools([engine("local", [{ engine: "mac", cap: 2 }, { engine: "gpu" }])])).toMatchObject({ ok: true });
+    expect(validatePools([engine("a", [{ engine: "mac" }]), engine("b", [{ engine: "mac" }])])).toMatchObject({ ok: false, errors: [{ field: "pools[1].engines" }] });
+    expect(validatePools([engine("a", [])])).toMatchObject({ ok: false, errors: [{ field: "pools[0].engines" }] });
+  });
+
+  it("checks a fallback pool exists and never goes from private to shared", () => {
+    const free = { id: "free", name: "free", backend: "proxy", patterns: ["l/free"], limit: 4, privacy: "shared" };
+    expect(validatePools([engine("local", [{ engine: "mac" }], { fallbackPool: "free", privacy: "shared" }), free])).toMatchObject({ ok: true });
+    expect(validatePools([engine("local", [{ engine: "mac" }], { fallbackPool: "free" }), free])).toMatchObject({ ok: false, errors: [{ field: "pools[0].fallbackPool", message: "A private pool can't fall back to a shared one" }] });
+    expect(validatePools([engine("local", [{ engine: "mac" }], { fallbackPool: "nope" })])).toMatchObject({ ok: false, errors: [{ field: "pools[0].fallbackPool" }] });
+  });
+});
+
+describe("quota pools without a backend", () => {
+  it("accept models from several backends and bare subscription names", () => {
+    const r = validatePools([{ id: "mix", name: "Mix", kind: "quota", patterns: ["openrouter/a:free", "litellm/free", "claude-haiku-5-5"], limit: 2, privacy: "shared" }]);
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe("board actions and data handlers", () => {
   const runtimes: Runtime[] = [];
   afterEach(async () => {
@@ -117,6 +140,18 @@ describe("board actions and data handlers", () => {
     expect(await store.companyPools("c2").get()).toEqual([]);
     expect(await harness.getData("pools-config", { companyId: "c1" })).toMatchObject({ pools: [{ id: "gpu" }] });
     expect(await harness.getData("pools-config", { companyId: "c2" })).toMatchObject({ pools: [] });
+  });
+
+  it("move-to-pool queues the move, and moving out of a private pool into a shared one needs allowShared", async () => {
+    const { harness, store } = await setup();
+    await harness.performAction("save-pools", { companyId: "c1", pools: [raw("local", { privacy: "private" }), raw("cloud", { agentModel: "cloud/m" })] }, user);
+    await store.holds.set({ t1: { issueId: "t1", companyId: "c1", poolId: "c1:local", priority: "medium", heldAt: NOW } });
+    expect(await harness.performAction("move-to-pool", { companyId: "c1", poolId: "cloud", issueIds: ["t1"] }, user))
+      .toEqual({ ok: false, needsConfirm: true, error: "That task is in a private pool; confirm to run on cloud's shared models" });
+    expect(await store.pendingMoves.get()).toEqual({});
+    expect(await harness.performAction("move-to-pool", { companyId: "c1", poolId: "cloud", issueIds: ["t1", "t2"], allowShared: true }, user))
+      .toEqual({ ok: false, error: "1 of 2 aren't waiting any more; the rest move within a minute" });
+    expect(await store.pendingMoves.get()).toMatchObject({ t1: { poolId: "c1:cloud", userId: "u1" } });
   });
 
   it("set-limit, hold-pool and resume-pool change state", async () => {

@@ -86,3 +86,37 @@ describe("sticky pools (P2.6)", () => {
     expect(short(decide(snapshot({ pools: [pinning], hosts: bothUp, tasks: [task("t1", { model: "pool/gpu" })] })))).toEqual(["place t1 l/mbp new"]);
   });
 });
+
+describe("held tasks whose wake-up started no run", () => {
+  it("are passed over, and the slot goes to the next task", () => {
+    const s = snapshot({
+      pools: [local()], hosts: bothUp, holds: [hold("t1", { heldAt: minutesAgo(9) }), hold("t2", { heldAt: minutesAgo(5) })],
+      tasks: [task("t1", { model: "l/local", status: "blocked" }), task("t2", { model: "l/local", status: "blocked" })],
+      wakeCooldown: { t1: "2099-01-01T00:00:00.000Z" },
+    });
+    expect(short(decide(s))).toEqual(["place t2 l/mbp new", "release t2 l/mbp"]);
+  });
+});
+
+
+describe("engines taking no new work", () => {
+  const capped = () => local({ placement: [{ model: "l/mbp", hostId: "mbp", cap: 0 }, { model: "l/vm", hostId: "vm" }] });
+
+  it("never places a new task on an engine capped at 0", () => {
+    expect(short(decide(snapshot({ pools: [capped()], hosts: bothUp, tasks: [task("t1", { model: "l/local" })] })))).toEqual(["place t1 l/vm new"]);
+  });
+
+  it("moves a placed task that hasn't started off an engine capped at 0, and leaves a running one", () => {
+    const s = snapshot({
+      pools: [capped()], hosts: bothUp, placements: { t1: "l/mbp", r1: "l/mbp" }, runs: [run("r1", { model: "l/mbp" })],
+      holds: [hold("t1")], tasks: [task("r1", { model: "l/mbp", hasActiveRun: true }), task("t1", { model: "l/mbp", status: "blocked" })],
+    });
+    expect(short(decide(s))).toEqual(["place t1 l/vm engineDown", "release t1 l/vm"]);
+  });
+
+  it("re-places a waiting task whose engine was taken out of the pool", () => {
+    const vmOnly = local({ placement: [{ model: "l/vm", hostId: "vm" }] });
+    const s = snapshot({ pools: [vmOnly], hosts: bothUp, placements: { t1: "l/mbp" }, holds: [hold("t1")], tasks: [task("t1", { model: "l/mbp", status: "blocked" })] });
+    expect(short(decide(s))).toEqual(["place t1 l/vm new", "release t1 l/vm"]);
+  });
+});
