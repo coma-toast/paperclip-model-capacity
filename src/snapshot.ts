@@ -1,6 +1,6 @@
 import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
-import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PRIORITY_RANK, STALLED_QUEUED_MS, virtualModel } from "./constants.js";
+import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PARK_EXPIRY_MS, PRIORITY_RANK, STALLED_QUEUED_MS, virtualModel } from "./constants.js";
 import { loadHeldPoolKeys, loadScopedPools, type BackendsFor } from "./pools.js";
 import { stripPrefix } from "./apis.js";
 import { backendPrefix } from "./backends.js";
@@ -443,6 +443,9 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),
     wakeCooldown: Object.fromEntries(Object.entries(await store.wakeCooldown.get()).filter(([, until]) => Date.parse(until) > now.getTime())),
+    // A parked task rejoins the queue once it runs, closes, or has been parked a day.
+    parked: Object.fromEntries(Object.entries(await store.parked.get()).filter(([id, p]) =>
+      now.getTime() - Date.parse(p.since) < PARK_EXPIRY_MS && tasks.some((t) => t.issueId === id && !t.hasActiveRun))),
     heldPools, exemptAgentIds: exemptions.agentIds,
     poolAgents: poolAgentsOf(pools, agentsByCompany),
     subscriptionLeft: await subscriptionLeftOf(store, pools, now),

@@ -214,6 +214,27 @@ describe("mode and alerts", () => {
   });
 });
 
+describe("parked tasks (their wake-ups kept starting no run)", () => {
+  const parked = (issueId: string, failures = 3) => ({ [issueId]: { issueId, companyId: "c1", poolId: "gpu", since: minutesAgo(5), failures } });
+
+  it("are neither held nor counted as waiting when the pool is full, and raise a needs-a-person alert", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("stuck"), task("t1")], parked: parked("stuck") }));
+    expect(holds(a)).toEqual([["t1", 1]]);
+    const alerts = kinds(a, "alert").map((x) => (x.kind === "alert" ? [x.alert.kind, x.alert.subject] : []));
+    expect(alerts).toEqual([["needsPerson", "stuck"]]);
+  });
+
+  it("don't take the free slot from the next task", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 1 })], parked: parked("first") }, heldTask("first", { heldAt: minutesAgo(9) }), heldTask("second", { heldAt: minutesAgo(5) }));
+    expect(releases(decide(s))).toEqual(["second"]);
+  });
+
+  it("stop alerting once the task has a run", () => {
+    const a = decide(snapshot({ runs: [run("stuck")], tasks: [task("stuck", { hasActiveRun: true })], parked: parked("stuck") }));
+    expect(kinds(a, "alert")).toEqual([]);
+  });
+});
+
 describe("held tasks whose wake-up started no run (plain pools)", () => {
   it("are passed over, and the slot goes to the next one in line", () => {
     const s = withHeld({ pools: [pool("gpu", { limit: 1 })], wakeCooldown: { first: "2099-01-01T00:00:00.000Z" } }, heldTask("first", { heldAt: minutesAgo(9) }), heldTask("second", { heldAt: minutesAgo(5) }));

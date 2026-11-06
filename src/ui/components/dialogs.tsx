@@ -206,6 +206,7 @@ export const WaitingDialog = ({ companyId, companyPrefix, pool, pools, onClose, 
 const KIND_LABEL: Record<AlertRow["kind"], string> = {
   waitedTooLong: "Waiting too long", overLimit: "Over the limit", hostDown: "Engine down", hostUp: "Engine back",
   quotaExhausted: "Quota used up", overrideRestoreFailed: "Model not restored", pluginError: "Plugin error",
+  needsPerson: "Needs a person",
 };
 const DISMISSABLE = new Set<AlertRow["kind"]>(["overrideRestoreFailed", "pluginError", "hostUp"]);
 
@@ -263,6 +264,8 @@ export const AlertsDialog = ({ companyId, companyPrefix, pool, pools, onClose, o
           {settings ? <a {...nav.linkProps(settings)} style={{ color: "#3b82f6", fontSize: 13, alignSelf: "center" }}>Edit backend →</a> : null}
         </div>
       );
+    } else if (a.kind === "needsPerson") {
+      explain = <><TaskLink companyPrefix={companyPrefix} identifier={a.identifier} title={a.title} /> left the {p?.name ?? "pool"} queue: Paperclip didn't start a run when it was woken, several times in a row. Usually an earlier run needs checking first. Open the task and post a message asking it to continue. This clears once it runs.</>;
     } else if (a.kind === "quotaExhausted") {
       explain = <>{a.message}. Tasks in {p?.name ?? "this pool"} go to its next model with quota left, or wait for the reset.</>;
       buttons = settings ? <a {...nav.linkProps(settings)} style={{ color: "#3b82f6", fontSize: 13 }}>Edit pool →</a> : null;

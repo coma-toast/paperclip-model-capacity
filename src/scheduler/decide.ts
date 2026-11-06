@@ -226,6 +226,16 @@ const waitAlerts = (pool: PoolConfig, queue: QueueEntry[], now: Date, at: string
     alert: { kind: "waitedTooLong", subject: entry.issueId, state: "start", poolId: pool.id, companyId: entry.companyId, at, message: `Waiting for ${pool.name} over ${pool.alertAfterMinutes} min` },
   }));
 
+// A task taken out of the queue after its wake-ups kept starting no run stays reported until it runs or closes.
+const parkedAlerts = (pool: PoolConfig, parked: OpenTask[], snapshot: Snapshot): Action[] =>
+  parked.map((t) => ({
+    kind: "alert",
+    alert: {
+      kind: "needsPerson", subject: t.issueId, state: "start", poolId: pool.id, companyId: t.companyId, at: snapshot.now,
+      message: `Left the ${pool.name} queue after ${snapshot.parked?.[t.issueId]?.failures ?? 0} wake-ups started no run; open the task and ask it to continue`,
+    },
+  }));
+
 export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): Action[] => {
   const poolsById = new Map(snapshot.pools.map((p) => [p.id, p]));
   const exemptAgents = new Set(snapshot.exemptAgentIds ?? []);
@@ -272,7 +282,9 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     const available = availableCapacity(pool, snapshot, runsPerPool.get(pool.id) ?? 0);
     const tasks = tasksByGroup.get(key) ?? [];
     const isExempt = (t: OpenTask) => t.exempt || exemptAgents.has(t.agentId);
-    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun);
+    // A parked task needs a person, not a slot: it neither waits in the queue nor is held again.
+    const parkedTasks = tasks.filter((t) => snapshot.parked?.[t.issueId] && OPEN.has(t.status) && !t.hasActiveRun);
+    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !snapshot.parked?.[t.issueId]);
     const held: HeldTask[] = snapshot.holds.filter((h) => groupKey(pool, h.companyId) === key && h.poolId === pool.id);
 
     // B5: an exempt task never waits, so drop any hold it still has.
@@ -295,7 +307,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
         pool, snapshot, now, waiting: waiting.filter((t) => !isExempt(t)), holdsByIssue,
         poolRoom: Math.max(0, available - count), paused: heldPools.has(pool.id) || pool.disabled === true,
       }));
-      actions.push(...waitAlerts(pool, queue, now, snapshot.now));
+      actions.push(...waitAlerts(pool, queue, now, snapshot.now), ...parkedAlerts(pool, parkedTasks, snapshot));
       continue;
     }
 
@@ -325,7 +337,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
       }
     }
 
-    actions.push(...waitAlerts(pool, queue, now, snapshot.now));
+    actions.push(...waitAlerts(pool, queue, now, snapshot.now), ...parkedAlerts(pool, parkedTasks, snapshot));
   }
   return [...actions, ...overflowActions()];
 };
