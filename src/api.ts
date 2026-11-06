@@ -298,7 +298,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const { active, recent } = await store.alerts.get();
     // Alerts about one task name it, so the alerts dialog can show and act on the task.
     const withTask = async (a: AlertEvent): Promise<AlertRow> => {
-      const issue = a.kind === "waitedTooLong" && a.companyId ? await ctx.issues.get(a.subject, a.companyId).catch(() => null) : null;
+      const issue = (a.kind === "waitedTooLong" || a.kind === "needsPerson") && a.companyId ? await ctx.issues.get(a.subject, a.companyId).catch(() => null) : null;
       return { ...a, key: alertKey(a), ...(issue ? { identifier: issue.identifier ?? undefined, title: issue.title, waiting: Boolean(holds[a.subject]) } : {}) };
     };
     const holds = await store.holds.get();

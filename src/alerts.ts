@@ -5,12 +5,13 @@ import type { Store } from "./state/store.js";
 import type { AlertEvent, AlertKind } from "./types.js";
 
 // Kinds decide() reports every cycle while the condition holds; one missing from a cycle has cleared.
-export const LEVEL_KINDS: readonly AlertKind[] = ["overLimit", "waitedTooLong"];
+export const LEVEL_KINDS: readonly AlertKind[] = ["overLimit", "waitedTooLong", "needsPerson"];
 
 const TITLES: Readonly<Record<AlertKind, string>> = {
   hostDown: "Host down",
   hostUp: "Host up",
   waitedTooLong: "Task waiting too long",
+  needsPerson: "Task needs a person",
   overLimit: "Pool over its limit",
   overrideRestoreFailed: "Model override not restored",
   quotaExhausted: "Quota exhausted",

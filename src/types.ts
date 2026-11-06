@@ -217,10 +217,21 @@ export interface OverrideRecord {
   at: string;
 }
 
+// A task whose wake-ups kept starting no run, so it no longer waits in its pool's queue.
+export interface ParkedTask {
+  issueId: string;
+  companyId: string;
+  poolId: string;
+  since: string;
+  failures: number;
+}
+
 export interface Snapshot {
   now: string;
   // Held tasks whose last wake-up started no run, until when they're skipped for the slot.
   wakeCooldown?: Record<string, string>;
+  // Tasks taken out of the queue because their wake-ups kept starting no run; a person has to look at them.
+  parked?: Record<string, ParkedTask>;
   pools: PoolConfig[];
   hosts: Record<string, HostStatus>;
   runs: RunningRun[];
@@ -268,6 +279,7 @@ export type AlertKind =
   | "hostDown"
   | "hostUp"
   | "waitedTooLong"
+  | "needsPerson"
   | "overLimit"
   | "overrideRestoreFailed"
   | "quotaExhausted"

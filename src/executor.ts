@@ -1,6 +1,6 @@
 import type { Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
-import { RELEASE_EXPIRY_MS, WAKE_CONFIRM_MS, WAKE_COOLDOWN_MS } from "./constants.js";
+import { PARK_AFTER_FAILED_WAKES, RELEASE_EXPIRY_MS, WAKE_CONFIRM_MS, WAKE_COOLDOWN_MS } from "./constants.js";
 import { DRAIN_GRACE_MS } from "./drain.js";
 import manifest from "./manifest.js";
 import { splitPoolKey } from "./pools.js";
@@ -116,6 +116,18 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     // that can't run (another blocker) reserves nothing, so the slot goes to the next task.
     const runId = await wake(a.issueId, a.companyId);
     if (!runId) {
+      const failures = ((await store.wakeFailures.get())[a.issueId] ?? 0) + 1;
+      if (held && failures >= PARK_AFTER_FAILED_WAKES) {
+        // Its wake-ups keep starting no run, so something only a person can clear stops it (for example, Paperclip
+        // wants someone to confirm an earlier run first). Leave it out of the queue, unblocked and unlabelled, and say
+        // so, instead of holding and waking it every cycle while it shows as waiting.
+        const { [a.issueId]: _failed, ...otherFailures } = await store.wakeFailures.get();
+        await store.wakeFailures.set(otherFailures);
+        await store.parked.set({ ...(await store.parked.get()), [a.issueId]: { issueId: a.issueId, companyId: a.companyId, poolId: a.poolId, since: now().toISOString(), failures } });
+        await ctx.activity.log({ companyId: a.companyId, message: `Model capacity: ${failures} wake-ups started no run, so this task left the queue; it needs a person to continue it`, entityType: "issue", entityId: a.issueId, metadata: { poolId: a.poolId, failures } }).catch(() => undefined);
+        return;
+      }
+      await store.wakeFailures.set({ ...(await store.wakeFailures.get()), [a.issueId]: failures });
       // No run started: the task can't run now. Put the hold back without a new comment, and skip it for a while so
       // the slot goes to the next task instead of this one being released and held again every cycle.
       if (held && blockerId) {
@@ -125,6 +137,11 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
       }
       await store.wakeCooldown.set({ ...(await store.wakeCooldown.get()), [a.issueId]: new Date(now().getTime() + WAKE_COOLDOWN_MS).toISOString() });
       return;
+    }
+    const failures = await store.wakeFailures.get();
+    if (failures[a.issueId] !== undefined) {
+      const { [a.issueId]: _ok, ...rest } = failures;
+      await store.wakeFailures.set(rest);
     }
     const released: ReleasedTask = { issueId: a.issueId, companyId: a.companyId, poolId: a.poolId, runId, ...(a.model ? { model: a.model } : {}), releasedAt: now().toISOString() };
     await store.released.set({ ...(await store.released.get()), [a.issueId]: released });

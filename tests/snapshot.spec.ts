@@ -308,6 +308,19 @@ describe("buildSnapshot", () => {
   });
 });
 
+describe("parked tasks", () => {
+  const park = (issueId: string, companyId: string, hoursAgo: number) => ({
+    [issueId]: { issueId, companyId, poolId: "gpu", since: new Date(Date.parse(NOW) - hoursAgo * 3_600_000).toISOString(), failures: 3 },
+  });
+
+  it("keeps a recent parked task, and drops one parked over a day ago, one with a run and one that closed", async () => {
+    const { deps, store } = await setup();
+    // i2: open, no run, parked an hour ago. i8: parked two days ago. i1: has run r1. i5: done.
+    await store.parked.set({ ...park("i2", "c1", 1), ...park("i8", "c2", 48), ...park("i1", "c1", 1), ...park("i5", "c1", 1) });
+    expect(Object.keys((await buildSnapshot(deps)).parked ?? {})).toEqual(["i2"]);
+  });
+});
+
 describe("per-company pools", () => {
   it("doesn't read a company that has no pools", async () => {
     const { harness, deps, store } = await setup();

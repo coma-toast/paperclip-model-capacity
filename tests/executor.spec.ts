@@ -357,6 +357,47 @@ describe("release puts a held task's status back", () => {
   });
 });
 
+describe("tasks whose wake-ups keep starting no run", () => {
+  const failingWakes = (ctx: ReturnType<typeof setup>["ctx"]) => {
+    (ctx.issues as { requestWakeup: unknown }).requestWakeup = async () => ({ queued: false, runId: null });
+  };
+
+  it("counts each wake-up that starts no run and keeps the task held until the limit", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    failingWakes(ctx);
+    await exec.execute([releaseAction("t1")], snap);
+    await exec.execute([releaseAction("t1")], snap);
+    expect((await store.wakeFailures.get()).t1).toBe(2);
+    expect((await store.holds.get()).t1).toBeDefined();
+    expect(await store.parked.get()).toEqual({});
+  });
+
+  it("parks the task on the third failed wake-up: no hold, no queue blocker, recorded as needing a person", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    failingWakes(ctx);
+    for (let i = 0; i < 3; i += 1) await exec.execute([releaseAction("t1")], snap);
+    expect(await store.holds.get()).toEqual({});
+    expect(await blockerIds(ctx, "t1")).toEqual([]);
+    expect((await store.parked.get()).t1).toMatchObject({ issueId: "t1", companyId: "c1", poolId: "gpu", failures: 3 });
+    expect(await store.wakeFailures.get()).toEqual({});
+  });
+
+  it("forgets earlier failures once a wake-up starts a run", async () => {
+    const { ctx, exec, store, snap } = setup("enforce");
+    await exec.execute([holdAction("t1")], snap);
+    const realWake = ctx.issues.requestWakeup.bind(ctx.issues);
+    failingWakes(ctx);
+    await exec.execute([releaseAction("t1")], snap);
+    expect((await store.wakeFailures.get()).t1).toBe(1);
+    (ctx.issues as { requestWakeup: unknown }).requestWakeup = realWake;
+    await exec.execute([releaseAction("t1")], snap);
+    expect(await store.wakeFailures.get()).toEqual({});
+    expect(Object.keys(await store.released.get())).toEqual(["t1"]);
+  });
+});
+
 describe("switchAdapter", () => {
   const agents = [
     { id: "a1", companyId: "c1", name: "Raymond", status: "idle", adapterType: "claude_local",

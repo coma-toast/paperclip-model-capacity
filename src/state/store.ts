@@ -1,7 +1,7 @@
 import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
 import { HISTORY_MAX_PER_DAY, STATE_SCHEMA_VERSION } from "../constants.js";
-import type { Action, AlertEvent, ExhaustedModel, HeldTask, HostStatus, OverrideRecord, PoolConfig, ReleasedTask } from "../types.js";
+import type { Action, AlertEvent, ExhaustedModel, HeldTask, HostStatus, OverrideRecord, ParkedTask, PoolConfig, ReleasedTask } from "../types.js";
 import type { BackendUsage } from "../usage.js";
 
 export interface HistoryEntry {
@@ -143,6 +143,10 @@ export const createStore = (state: PluginStateClient) => {
     // Held tasks whose wake-up started no run (their agent is stuck, or Paperclip's recovery parked the task), by issue
     // id until when: they keep waiting without taking the slot.
     wakeCooldown: blob<Record<string, string>>(state, instanceKey("wakeCooldown"), () => ({})),
+    // Wake-ups in a row that started no run, by issue id; reset when one starts a run.
+    wakeFailures: blob<Record<string, number>>(state, instanceKey("wakeFailures"), () => ({})),
+    // Tasks taken out of the queue after PARK_AFTER_FAILED_WAKES failed wake-ups, by issue id.
+    parked: blob<Record<string, ParkedTask>>(state, instanceKey("parked"), () => ({})),
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
     exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
     // Keys of unapplied decisions made last cycle, so history records each one once.

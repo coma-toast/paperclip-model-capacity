@@ -24,6 +24,11 @@ export const WAKE_CONFIRM_MS = 30_000;
 export const RELEASE_EXPIRY_MS = 5 * 60_000;
 // How long a held task whose wake-up started no run is skipped, so the slot goes to the next one.
 export const WAKE_COOLDOWN_MS = 10 * 60_000;
+// A held task whose wake-up starts no run this many times in a row needs a person (for example, Paperclip wants
+// someone to confirm an earlier run before it runs again), so it leaves the queue instead of being retried forever.
+export const PARK_AFTER_FAILED_WAKES = 3;
+// A parked task rejoins the queue after this long, in case it was fixed without a run showing up.
+export const PARK_EXPIRY_MS = 24 * 60 * 60_000;
 // A run still queued this long while its agent is idle isn't about to start (e.g. its task is blocked), so it stops
 // counting as a model slot in use.
 export const STALLED_QUEUED_MS = 10 * 60_000;
