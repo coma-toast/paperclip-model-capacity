@@ -1,7 +1,8 @@
 import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
 import { HISTORY_MAX_PER_DAY, STATE_SCHEMA_VERSION } from "../constants.js";
-import type { Action, HeldTask, HostStatus, OverrideRecord, PoolConfig, ReleasedTask } from "../types.js";
+import type { Action, AlertEvent, ExhaustedModel, HeldTask, HostStatus, OverrideRecord, ParkedTask, PoolConfig, ReleasedTask } from "../types.js";
+import type { BackendUsage } from "../usage.js";
 
 export interface HistoryEntry {
   at: string;
@@ -14,6 +15,12 @@ export interface HistoryEntry {
 export interface Exemptions {
   agentIds: string[];
   issueIds: string[];
+}
+
+// Open alerts by dedupe key (G3) and the latest start/clear events for the UI.
+export interface AlertState {
+  active: Record<string, AlertEvent>;
+  recent: AlertEvent[];
 }
 
 // Migrations step a blob from version N to N + 1. Version 0 means a blob written before versioning existed.
@@ -67,6 +74,15 @@ const blob = <T>(state: PluginStateClient, key: ScopeKey, fallback: () => T) => 
   set: (value: T) => writeVersioned(state, key, value),
 });
 
+import type { SubscriptionSample } from "../subscriptions.js";
+
+export interface RunCounts {
+  day: string;
+  counts: Record<string, number>;
+  // Run ids already counted today.
+  seen: string[];
+}
+
 export const createStore = (state: PluginStateClient) => {
   // ctx.state can't list keys, so the day keys of history live in an index blob.
   const historyIndex = blob<string[]>(state, instanceKey("historyIndex"), () => []);
@@ -94,13 +110,50 @@ export const createStore = (state: PluginStateClient) => {
   };
 
   return {
+    // Legacy single pool list from before per-company pools; read only to migrate.
     pools: blob<PoolConfig[]>(state, instanceKey("pools"), () => []),
+    // Instance-scope keys per company: proactive work can always read instance state.
+    companyPools: (companyId: string) => blob<PoolConfig[]>(state, instanceKey(`pools:${companyId}`), () => []),
+    companyHeldPools: (companyId: string) => blob<string[]>(state, instanceKey(`heldPools:${companyId}`), () => []),
     hosts: blob<Record<string, HostStatus>>(state, instanceKey("hosts"), () => ({})),
+    // Quota models currently used up ("<companyId>|<model>"), with since/until.
+    exhausted: blob<Record<string, ExhaustedModel>>(state, instanceKey("exhausted"), () => ({})),
+    // Latest usage sample per backend id, for one company.
+    // Names routed only to each engine (by engine id), from the proxies' routing, for engine pools.
+    // When the earlier pool settings were converted to engine/quota pools (P2.7.4), until the note is dismissed.
+    poolsConvertedAt: (companyId: string) => blob<string | null>(state, instanceKey(`poolsConvertedAt:${companyId}`), () => null),
+    companyEngineAliases: (companyId: string) => blob<Record<string, string[]>>(state, instanceKey(`engineAliases:${companyId}`), () => ({})),
+    companyUsage: (companyId: string) => blob<Record<string, BackendUsage>>(state, instanceKey(`usage:${companyId}`), () => ({})),
+    // Runs started today (UTC) per model, counted from the runs the plugin sees, for daily caps and the usage view.
+    // Each backend's spend meters at the first sample of the UTC day, so a running total can show today's share.
+    spendBaseline: (companyId: string) => blob<{ day: string; values: Record<string, number> }>(state, instanceKey(`spendBaseline:${companyId}`), () => ({ day: "", values: {} })),
+    // The company's subscription windows, read with the board token on the usage tick.
+    subscriptionWindows: (companyId: string) => blob<SubscriptionSample | null>(state, instanceKey(`subscriptions:${companyId}`), () => null),
+    // Runs on a draining engine, by run id: when each was first seen there, for the grace period before it's moved.
+    drainSince: blob<Record<string, string>>(state, instanceKey("drainSince"), () => ({})),
+    // Runs a board user asked to move off a draining engine now, applied by the next cycle.
+    forceDrain: blob<Record<string, { userId: string; at: string }>>(state, instanceKey("forceDrain"), () => ({})),
+    // Moves a board user asked for, applied by the next cycle (a move takes several slow host calls).
+    pendingMoves: blob<Record<string, { issueId: string; companyId: string; poolId: string; userId: string; at: string }>>(state, instanceKey("pendingMoves"), () => ({})),
+    // A switched agent's settings for the adapter it left, by agent id then adapter type, so it can switch back.
+    adapterProfiles: (companyId: string) => blob<Record<string, Record<string, Record<string, unknown>>>>(state, instanceKey(`adapterProfiles:${companyId}`), () => ({})),
+    runCounts: (companyId: string) => blob<RunCounts>(state, instanceKey(`runCounts:${companyId}`), () => ({ day: "", counts: {}, seen: [] })),
     holds: blob<Record<string, HeldTask>>(state, instanceKey("holds"), () => ({})),
     released: blob<Record<string, ReleasedTask>>(state, instanceKey("released"), () => ({})),
+    // Held tasks whose wake-up started no run (their agent is stuck, or Paperclip's recovery parked the task), by issue
+    // id until when: they keep waiting without taking the slot.
+    wakeCooldown: blob<Record<string, string>>(state, instanceKey("wakeCooldown"), () => ({})),
+    // Wake-ups in a row that started no run, by issue id; reset when one starts a run.
+    wakeFailures: blob<Record<string, number>>(state, instanceKey("wakeFailures"), () => ({})),
+    // Tasks taken out of the queue after PARK_AFTER_FAILED_WAKES failed wake-ups, by issue id.
+    parked: blob<Record<string, ParkedTask>>(state, instanceKey("parked"), () => ({})),
     overrides: blob<Record<string, OverrideRecord>>(state, instanceKey("overrides"), () => ({})),
-    heldPools: blob<string[]>(state, instanceKey("heldPools"), () => []),
     exemptions: blob<Exemptions>(state, instanceKey("exemptions"), () => ({ agentIds: [], issueIds: [] })),
+    // Keys of unapplied decisions made last cycle, so history records each one once.
+    observed: blob<string[]>(state, instanceKey("observed"), () => []),
+    // The last company list that companies.list returned, for when the host refuses a proactive call.
+    companies: blob<{ id: string; name: string }[]>(state, instanceKey("companies"), () => []),
+    alerts: blob<AlertState>(state, instanceKey("alerts"), () => ({ active: {}, recent: [] })),
     queueBlockers: (companyId: string) => blob<Record<string, string>>(state, companyKey(companyId, "queueBlockers"), () => ({})),
     historyDays: () => historyIndex.get(),
     history: (day: string) => blob<HistoryEntry[]>(state, historyKey(day), () => []).get(),

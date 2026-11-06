@@ -29,12 +29,12 @@ describe("store round-trips", () => {
     await store.hosts.set({ h1: upHost("h1", 1, 0) });
     await store.holds.set({ t1: hold("t1") });
     await store.released.set({ t2: { issueId: "t2", companyId: "c1", poolId: "gpu", runId: "r2", releasedAt: "2026-10-28T12:00:00.000Z" } });
-    await store.heldPools.set(["gpu"]);
+    await store.companyHeldPools("c1").set(["gpu"]);
     expect(await store.pools.get()).toEqual([pool("gpu")]);
     expect(await store.hosts.get()).toEqual({ h1: upHost("h1", 1, 0) });
     expect((await store.holds.get()).t1.issueId).toBe("t1");
     expect((await store.released.get()).t2.runId).toBe("r2");
-    expect(await store.heldPools.get()).toEqual(["gpu"]);
+    expect(await store.companyHeldPools("c1").get()).toEqual(["gpu"]);
     expect(harness.getState({ scopeKind: "instance", stateKey: "pools" })).toEqual({ version: STATE_SCHEMA_VERSION, data: [pool("gpu")] });
   });
 
@@ -77,9 +77,9 @@ describe("history", () => {
 describe("versioning", () => {
   it("migrates an unversioned blob on read and writes it back versioned", async () => {
     const { harness, state, store } = setup();
-    await state.set({ scopeKind: "instance", stateKey: "heldPools" }, ["gpu"]);
-    expect(await store.heldPools.get()).toEqual(["gpu"]);
-    expect(harness.getState({ scopeKind: "instance", stateKey: "heldPools" })).toEqual({ version: STATE_SCHEMA_VERSION, data: ["gpu"] });
+    await state.set({ scopeKind: "instance", stateKey: "heldPools:c1" }, ["gpu"]);
+    expect(await store.companyHeldPools("c1").get()).toEqual(["gpu"]);
+    expect(harness.getState({ scopeKind: "instance", stateKey: "heldPools:c1" })).toEqual({ version: STATE_SCHEMA_VERSION, data: ["gpu"] });
   });
 
   it("runs each migration step in order", async () => {

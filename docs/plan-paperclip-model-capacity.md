@@ -267,6 +267,27 @@ Each step is one Paperclip task. "Done when" is the check an agent must show (co
 **P2.5 Live:** enable overflow `gpu` → `free` after 15 minutes for unpinned tasks.
 - **Done when:** AC3 and AC4 have evidence on the host.
 
+### P2.7 — Engine pools and quota pools (revised configuration, 2026-10-31)
+
+Agreed with Jason in a design interview after P2.6 shipped. It replaces the pool settings built so far: a pool held models, a backend, watched engines and engine ties all at once, and that was hard to reason about. The live configuration is converted automatically (P2.7.4).
+
+**Concepts**
+- **Engine** = a local engine backend (llama.cpp, oMLX, Ollama, LM Studio, vLLM) with slots. Each engine says how agents reach it: through a proxy (pick the proxy backend; the model name, e.g. `litellm/mbp`, is read from the proxy's routing and kept in sync) or directly (the harness config gets a provider pointing at the engine).
+- **Engine pool** = an ordered list of engines (first = tried first). An engine is in at most one engine pool. Capacity per engine is its slots (as reported, else as set), with an optional per-engine cap ("use at most N"); outside load is subtracted live. Pinning is always on. Any run whose model reaches one of its engines counts against that engine; a task on such a model counts as already pinned there.
+- **Quota pool** = an ordered list of models on a cloud or proxy backend, plus a max runs at once. It pauses (holds new work) while the backend reports its quota used up — credits at 0, a budget hit, a subscription window at 100%, or repeated 429 rate-limit failures — until the reported reset.
+- **Virtual model** `pool/<id>` for every pool. Agents point at it instead of a specific model. Engine pool: each task is pinned to the first engine with room (its model override set to that engine's reach model) and stays there. Quota pool: each task is pinned to the first model with quota left and stays there.
+- **Subtasks** follow their parent's engine or model only when their agent is on the same pool; otherwise their own pool places them.
+- **Fallback pool** (optional, per pool): a new, unpinned task that has waited `fallbackAfterMinutes` goes to the fallback pool. Never from a private pool to a shared one; never moves a pinned task.
+- **No balanced models:** the plugin replaces proxy aliases that balance across engines (`litellm/local`). A pool model that routes to more than one engine is flagged for removal from the proxy.
+- **Harness fallback:** one OpenCode provider `pool`, pointing at a single endpoint (the proxy, LiteLLM for JD), maps each `pool/<id>` to a model that endpoint serves (the first engine's or model's). Pools it can't serve are flagged; their rare early runs fail once and retry after placement.
+
+**Steps** (deploy after each)
+1. **P2.7.1 Engine reach:** engine backends gain `reachVia` (proxy backend id, or `direct`) and the reach model, synced from proxy routing; slots plus per-engine caps. *Done when:* the settings page shows each engine's reach model with a routing check, and tests cover sync and mismatch.
+2. **P2.7.2 Scheduler:** engine pools (per-engine capacity, direct use counted, pinning onto reach models) and quota pools (ordered models, exhausted-quota pause from usage samples and 429 failures, pinning to a model with quota). *Done when:* `tests/enginePool.spec.ts` and `tests/quotaPool.spec.ts` cover placement order, caps, direct use, exhausted pause and resume, and subtasks.
+3. **P2.7.3 Fallback pools:** wait then move unpinned tasks, with privacy and pin rules. *Done when:* tests cover the wait, privacy refusal and pinned refusal.
+4. **P2.7.4 Settings page and migration:** pool kinds on the page (engine pool: engines, order, caps; quota pool: models, order, limit), and a one-time conversion of saved pools (pinned engines → engine pool; others → quota pool) with a review note. *Done when:* the live JD config converts without losing a pool, and a screenshot shows both kinds.
+5. **P2.7.5 Harness config:** single fallback endpoint, warnings for pools it can't serve. Then check `litellm/local`'s recent traffic and, with Jason's OK, remove it from LiteLLM.
+
 ### P3 — Quota sources, quota UI, Prometheus
 
 **P3.1 Quota adapters: `src/quota/{litellm,openrouter,paperclip,headers}.ts`.**

@@ -22,6 +22,19 @@ describe("limits", () => {
     expect(decide(snapshot({ tasks: [task("t1")] }))).toEqual([]);
   });
 
+  it("a run queued behind its own agent doesn't take the slot, and its task isn't held", () => {
+    const a = decide(snapshot({ runs: [run("q1", { status: "queued", waitingOnAgent: true })], tasks: [task("q1", { hasActiveRun: true }), task("t1")] }));
+    expect(a).toEqual([]);
+  });
+
+  it("a disabled pool lets runs finish, releases nothing, holds new work and doesn't alert", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 2, disabled: true })], runs: [run("r1")], tasks: [task("r1", { hasActiveRun: true }), task("t9")] }, heldTask("h1", { heldAt: minutesAgo(120) }));
+    const a = decide(s);
+    expect(a.filter((x) => x.kind === "release")).toEqual([]);
+    expect(holds(a)).toEqual([["t9", 2]]);
+    expect(a.filter((x) => x.kind === "alert")).toEqual([]);
+  });
+
   it("limit 1 with one run holds the rest", () => {
     const a = decide(snapshot({ runs: [run("r1")], tasks: [task("r1", { hasActiveRun: true }), task("t1")] }));
     expect(holds(a)).toEqual([["t1", 1]]);
@@ -108,6 +121,11 @@ describe("exemptions (B5)", () => {
 describe("hosts (B3, E3)", () => {
   const gpu = pool("gpu", { limit: 4, hosts: [host("h1", { declaredSlots: 2 }), host("h2", { declaredSlots: 2 })] });
 
+  it("a pool matching its engines takes their live slots instead of its limit", () => {
+    expect(availableCapacity({ ...gpu, limitFromEngines: true }, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(10);
+    expect(availableCapacity({ ...gpu, limitFromEngines: true }, snapshot({ hosts: { h1: upHost("h1"), h2: downHost("h2") } }), 0)).toBe(2);
+  });
+
   it("uses probed slots over declared, capped by the limit", () => {
     expect(availableCapacity(gpu, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(4);
     expect(availableCapacity({ ...gpu, limit: 10 }, snapshot({ hosts: { h1: upHost("h1", 8), h2: upHost("h2") } }), 0)).toBe(10);
@@ -193,5 +211,33 @@ describe("mode and alerts", () => {
 
   it("returns no overflow actions before P2", () => {
     expect(kinds(decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("t1")] })), "overflow")).toEqual([]);
+  });
+});
+
+describe("parked tasks (their wake-ups kept starting no run)", () => {
+  const parked = (issueId: string, failures = 3) => ({ [issueId]: { issueId, companyId: "c1", poolId: "gpu", since: minutesAgo(5), failures } });
+
+  it("are neither held nor counted as waiting when the pool is full, and raise a needs-a-person alert", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("stuck"), task("t1")], parked: parked("stuck") }));
+    expect(holds(a)).toEqual([["t1", 1]]);
+    const alerts = kinds(a, "alert").map((x) => (x.kind === "alert" ? [x.alert.kind, x.alert.subject] : []));
+    expect(alerts).toEqual([["needsPerson", "stuck"]]);
+  });
+
+  it("don't take the free slot from the next task", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 1 })], parked: parked("first") }, heldTask("first", { heldAt: minutesAgo(9) }), heldTask("second", { heldAt: minutesAgo(5) }));
+    expect(releases(decide(s))).toEqual(["second"]);
+  });
+
+  it("stop alerting once the task has a run", () => {
+    const a = decide(snapshot({ runs: [run("stuck")], tasks: [task("stuck", { hasActiveRun: true })], parked: parked("stuck") }));
+    expect(kinds(a, "alert")).toEqual([]);
+  });
+});
+
+describe("held tasks whose wake-up started no run (plain pools)", () => {
+  it("are passed over, and the slot goes to the next one in line", () => {
+    const s = withHeld({ pools: [pool("gpu", { limit: 1 })], wakeCooldown: { first: "2099-01-01T00:00:00.000Z" } }, heldTask("first", { heldAt: minutesAgo(9) }), heldTask("second", { heldAt: minutesAgo(5) }));
+    expect(releases(decide(s))).toEqual(["second"]);
   });
 });

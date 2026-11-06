@@ -1,19 +1,42 @@
 import type { TaskPriority } from "./types.js";
 
+// The manifest id; the UI finds the plugin's install id by it.
+export const PLUGIN_KEY = "coma-toast.paperclip-model-capacity";
+
+// Every pool also answers to a virtual model, "pool/<pool id>": an agent pointed at it uses the pool instead of a
+// specific model, and a pinning pool sets each task to a real engine's model before it runs.
+export const VIRTUAL_MODEL_PREFIX = "pool/";
+export const virtualModel = (poolId: string) => `${VIRTUAL_MODEL_PREFIX}${poolId}`;
+
 export const STATE_SCHEMA_VERSION = 1;
 
 export const DEFAULT_PROBE_INTERVAL_MS = 30_000;
 export const PROBE_TIMEOUT_MS = 5_000;
+// Spend and credit endpoints change slowly; local slots are also probed every DEFAULT_PROBE_INTERVAL_MS for gating.
+export const DEFAULT_USAGE_INTERVAL_MS = 120_000;
 export const HOST_DOWN_AFTER_FAILURES = 3;
 export const HOST_UP_AFTER_SUCCESSES = 2;
 
 export const SWEEP_CRON = "* * * * *";
 export const PRUNE_CRON = "0 4 * * *";
 export const WAKE_CONFIRM_MS = 30_000;
+// A released task whose run never appears stops counting against the pool after this long.
+export const RELEASE_EXPIRY_MS = 5 * 60_000;
+// How long a held task whose wake-up started no run is skipped, so the slot goes to the next one.
+export const WAKE_COOLDOWN_MS = 10 * 60_000;
+// A held task whose wake-up starts no run this many times in a row needs a person (for example, Paperclip wants
+// someone to confirm an earlier run before it runs again), so it leaves the queue instead of being retried forever.
+export const PARK_AFTER_FAILED_WAKES = 3;
+// A parked task rejoins the queue after this long, in case it was fixed without a run showing up.
+export const PARK_EXPIRY_MS = 24 * 60 * 60_000;
+// A run still queued this long while its agent is idle isn't about to start (e.g. its task is blocked), so it stops
+// counting as a model slot in use.
+export const STALLED_QUEUED_MS = 10 * 60_000;
 export const RUN_EVENT_DEBOUNCE_MS = 2_000;
 export const AGENT_CACHE_TTL_MS = 60_000;
 export const HISTORY_RETENTION_DAYS = 30;
 export const HISTORY_MAX_PER_DAY = 1_000;
+export const RECENT_ALERTS_MAX = 200;
 
 export const DEFAULT_ALERT_AFTER_MINUTES = 30;
 
