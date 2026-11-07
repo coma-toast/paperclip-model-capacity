@@ -196,6 +196,11 @@ describe("scope and filters (A3)", () => {
     const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("x", { poolId: "nope" }), task("done", { status: "done" }), task("t1")] }));
     expect(holds(a)).toEqual([["t1", 1]]);
   });
+
+  it("doesn't hold an in_review task", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("x", { status: "in_review" }), task("t1")] }));
+    expect(holds(a)).toEqual([["t1", 1]]);
+  });
 });
 
 describe("mode and alerts", () => {

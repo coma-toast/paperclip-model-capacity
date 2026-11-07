@@ -284,7 +284,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     const isExempt = (t: OpenTask) => t.exempt || exemptAgents.has(t.agentId);
     // A parked task needs a person, not a slot: it neither waits in the queue nor is held again.
     const parkedTasks = tasks.filter((t) => snapshot.parked?.[t.issueId] && OPEN.has(t.status) && !t.hasActiveRun);
-    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !snapshot.parked?.[t.issueId]);
+    const waiting = tasks.filter((t) => OPEN.has(t.status) && t.status !== "in_review" && !t.hasActiveRun && !snapshot.parked?.[t.issueId]);
     const held: HeldTask[] = snapshot.holds.filter((h) => groupKey(pool, h.companyId) === key && h.poolId === pool.id);
 
     // B5: an exempt task never waits, so drop any hold it still has.
