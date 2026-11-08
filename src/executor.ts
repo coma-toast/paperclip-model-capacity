@@ -205,11 +205,11 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     });
     if (!res.ok) throw new Error(`Paperclip refused to cancel the run (${res.status}): ${(await res.text()).slice(0, 200)}`);
     const why = forced ? "a board user moved it" : `its run hadn't finished ${DRAIN_GRACE_MS / 60_000} min after the engine stopped taking work`;
-await hold({ kind: "hold", issueId: run.issueId, companyId: run.companyId, poolId: pool.id, position: 1 }, pool, snapshot, {
-       heldAt: run.startedAt ?? run.queuedAt,
-       comment: `Moved off ${engineName} (${why}): the run was cancelled and the task restarts on another ${pool.name} engine. Model capacity plugin.`,
-       cancellationSource: "drain",
-     });
+    await hold({ kind: "hold", issueId: run.issueId, companyId: run.companyId, poolId: pool.id, position: 1 }, pool, snapshot, {
+      heldAt: run.startedAt ?? run.queuedAt,
+      comment: `Moved off ${engineName} (${why}): the run was cancelled and the task restarts on another ${pool.name} engine. Model capacity plugin.`,
+      cancellationSource: "drain",
+    });
     await ctx.activity.log({ companyId: run.companyId, message: `Model capacity: moved a run off draining ${engineName}`, entityType: "issue", entityId: run.issueId, metadata: { runId: run.runId, forced } });
   };
 
