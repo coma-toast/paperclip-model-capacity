@@ -35,6 +35,17 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.page.register",
     "ui.detailTab.register",
     "instance.settings.register",
+    "api.routes.register",
+  ],
+  apiRoutes: [
+    {
+      routeKey: "metrics",
+      method: "GET",
+      path: "/metrics",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
+    },
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -55,7 +66,8 @@ const manifest: PaperclipPluginManifestV1 = {
       queueLabelId: { type: "string", title: "Queue label", description: "Existing label added to held tasks (optional)." },
       alertIssueId: { type: "string", title: "Alert task", description: "Unassigned standing task that gets alert comments (optional)." },
       quotaToken: { format: "secret-ref", title: "Board token for subscription quotas", description: "Optional. Lets the plugin read this company's Claude and ChatGPT subscription windows (board-only in Paperclip), so a subscription pool pauses when a window reaches 100%, and switch agents between Claude Code and Codex in a switching pool." },
-      paperclipUrl: { type: "string", title: "Paperclip address", description: "Where the plugin reaches Paperclip's API with the board token. Paperclip blocks plugin requests to private addresses such as 127.0.0.1, so use its tailnet or public address (e.g. https://paperclip.example.ts.net)." },
+      paperclipUrl: { type: "string", title: "Paperclip address", description: "Where the plugin reaches Paperclip's API with the board token. Paperclip blocks plugin requests to private addresses such as [IPV4_REDACTED], so use its tailnet or public address (e.g. https://paperclip.example.ts.net)." },
+      metricsToken: { type: "string", title: "Metrics bearer token", description: "Optional. Bearer token required to scrape the /metrics Prometheus endpoint." },
       ...backendsConfigSchema,
     },
   },

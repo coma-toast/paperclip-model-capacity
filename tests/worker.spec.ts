@@ -186,9 +186,19 @@ describe("manifest and plugin hooks", () => {
   it("declares the jobs, capabilities and database read the worker uses", () => {
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["sweep", "* * * * *"], ["prune", "0 4 * * *"]]);
     expect(manifest.database).toEqual({ migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events"] });
-    for (const cap of ["jobs.schedule", "issues.wakeup", "issue.relations.write", "database.namespace.read", "http.outbound"] as const) {
+    for (const cap of ["jobs.schedule", "issues.wakeup", "issue.relations.write", "database.namespace.read", "http.outbound", "api.routes.register"] as const) {
       expect(manifest.capabilities).toContain(cap);
     }
+    expect(manifest.apiRoutes).toEqual([
+      {
+        routeKey: "metrics",
+        method: "GET",
+        path: "/metrics",
+        auth: "board-or-agent",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
   });
 
   it("every migration statement names the plugin's own schema", () => {

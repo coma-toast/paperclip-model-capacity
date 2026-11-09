@@ -1,18 +1,41 @@
+import type { PluginApiRequestInput, PluginApiResponse, PluginContext } from "@paperclipai/plugin-sdk";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
 import { registerApi } from "./api.js";
 import manifest from "./manifest.js";
+import { authorizeMetricsRequest, collectMetrics } from "./metrics.js";
 import { createRuntime, type Runtime } from "./runtime.js";
 
 const CONFIG_KEYS = Object.keys(manifest.instanceConfigSchema?.properties ?? {});
 let runtime: Runtime | undefined;
+let pluginCtx: PluginContext | undefined;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    pluginCtx = ctx;
     runtime = createRuntime(ctx);
     runtime.start();
     registerApi(ctx, runtime);
     ctx.data.register("health", async () => ({ status: "ok", ...runtime?.health(), checkedAt: new Date().toISOString() }));
+  },
+
+  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+    if (input.routeKey === "metrics" || input.path === "/metrics") {
+      if (!runtime || !pluginCtx) {
+        return { status: 503, headers: { "content-type": "application/json" }, body: { error: "Plugin worker runtime is not initialized" } };
+      }
+      const auth = await authorizeMetricsRequest(pluginCtx, input);
+      if (!auth.authorized) {
+        return { status: 401, headers: { "content-type": "application/json" }, body: { error: auth.reason ?? "Unauthorized" } };
+      }
+      const text = await collectMetrics(runtime, input.companyId);
+      return {
+        status: 200,
+        headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+        body: text,
+      };
+    }
+    return { status: 404, headers: { "content-type": "application/json" }, body: { error: "Route not found" } };
   },
 
   async onHealth() {
