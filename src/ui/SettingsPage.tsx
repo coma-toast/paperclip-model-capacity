@@ -5,6 +5,7 @@ import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
 import { APIS, addPrefix, apiInfo, backendFromConnection, frontsEngines, hasEndpoint, stripPrefix, type ApiKind, BACKEND_PRESETS, type BackendPreset } from "../apis.js";
 import { backendForModel, backendPrefix, type Backend, type BackendSummary } from "../backends.js";
+import { resolveBillingConfig, checkBigQueryPermission, type BigQueryPermissionResult } from "../billing.js";
 import { VIRTUAL_MODEL_PREFIX, virtualModel } from "../constants.js";
 import type { ListModelsResult } from "../models.js";
 import type { InspectResult } from "../probes/inspect.js";
@@ -189,6 +190,13 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
   const info = apiInfo(draft.type);
   const set = (patch: Partial<Omit<Backend, "key">>) => { setDraft({ ...draft, ...patch }); setResult(null); };
   const needsAddress = !info.defaultBaseUrl && hasEndpoint(draft.type);
+  // BigQuery billing config fields.
+  const [billingProject, setBillingProject] = useState("");
+  const [billingDataset, setBillingDataset] = useState("");
+  const [billingTable, setBillingTable] = useState("");
+  const [billingServiceAccount, setBillingServiceAccount] = useState("");
+  const [billingPermission, setBillingPermission] = useState<BigQueryPermissionResult | null>(null);
+  const [billingChecking, setBillingChecking] = useState(false);
 
   // Apply a preset: fills type, baseUrl, prefix, name and (for local) slots, then scrolls into view.
   const applyPreset = (preset: BackendPreset) => {
@@ -196,6 +204,49 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       ? "https://generativelanguage.googleapis.com/v1beta"
       : apiInfo(preset.type).defaultBaseUrl;
     set({ type: preset.type, baseUrl: presetBaseUrl || undefined, prefix: undefined, name: preset.label, slots: apiInfo(preset.type).group === "local" ? 1 : undefined });
+  };
+
+  // Check BigQuery billing access.
+  const checkBilling = async () => {
+    setBillingChecking(true);
+    setBillingPermission(null);
+    setProblem(undefined);
+    try {
+      // Build a temporary service account key from the entered JSON.
+      let saKey: { project_id: string; client_email: string; private_key: string };
+      try {
+        saKey = JSON.parse(billingServiceAccount);
+      } catch {
+        setProblem("Service account key must be valid JSON.");
+        setBillingChecking(false);
+        return;
+      }
+      if (!saKey.project_id || !saKey.client_email || !saKey.private_key) {
+        setProblem("Service account key missing project_id, client_email, or private_key.");
+        setBillingChecking(false);
+        return;
+      }
+      const billingConfig = {
+        serviceAccount: saKey,
+        projectId: billingProject.trim(),
+        datasetId: billingDataset.trim(),
+        tableName: billingTable.trim(),
+      };
+      if (!billingConfig.projectId || !billingConfig.datasetId || !billingConfig.tableName) {
+        setProblem("Enter the project ID, dataset ID, and table name.");
+        setBillingChecking(false);
+        return;
+      }
+      const result = await checkBigQueryPermission(billingConfig, (url, init) => fetch(url, init));
+      setBillingPermission(result);
+      if (!result.ok) {
+        setProblem(result.error);
+      }
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : "Billing check failed");
+    } finally {
+      setBillingChecking(false);
+    }
   };
 
   const runTest = async () => {
@@ -226,6 +277,26 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       const prepaidCreditBindingValue = prepaidCredit.trim()
         ? await createCompanySecret(companyId, `Model capacity: ${name} prepaid credit (${new Date().toISOString().slice(0, 16)})`, prepaidCredit.trim())
         : prepaidCreditBinding ?? previous?.prepaidCredit;
+      // BigQuery billing config: create secrets for each field if entered.
+      let billingConfigValue: import("../types.js").BigQueryConfig | undefined;
+      const saTrim = billingServiceAccount.trim();
+      const projectTrim = billingProject.trim();
+      const datasetTrim = billingDataset.trim();
+      const tableTrim = billingTable.trim();
+      if (saTrim || projectTrim || datasetTrim || tableTrim) {
+        const saBinding = saTrim ? await createCompanySecret(companyId, `Model capacity: ${name} BigQuery service account (${new Date().toISOString().slice(0, 16)})`, saTrim) : undefined;
+        const projectBinding = projectTrim ? await createCompanySecret(companyId, `Model capacity: ${name} BigQuery project ID (${new Date().toISOString().slice(0, 16)})`, projectTrim) : undefined;
+        const datasetBinding = datasetTrim ? await createCompanySecret(companyId, `Model capacity: ${name} BigQuery dataset ID (${new Date().toISOString().slice(0, 16)})`, datasetTrim) : undefined;
+        const tableBinding = tableTrim ? await createCompanySecret(companyId, `Model capacity: ${name} BigQuery table name (${new Date().toISOString().slice(0, 16)})`, tableTrim) : undefined;
+        // Preserve existing bindings if fields are empty.
+        const prevBc = previous?.billingConfig as import("../types.js").BigQueryConfig | undefined;
+        billingConfigValue = {
+          serviceAccountKey: saBinding ?? prevBc?.serviceAccountKey,
+          projectId: projectBinding ?? prevBc?.projectId,
+          datasetId: datasetBinding ?? prevBc?.datasetId,
+          tableName: tableBinding ?? prevBc?.tableName,
+        };
+      }
       const backend: Backend = {
         id, name, type: draft.type,
         // Stored explicitly (defaults included) so the host's config form shows them too.
@@ -237,6 +308,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
         ...(keyBinding ? { key: keyBinding } : {}),
         ...(prepaidCreditBindingValue ? { prepaidCredit: prepaidCreditBindingValue } : {}),
+        ...(billingConfigValue && Object.keys(billingConfigValue).length > 0 ? { billingConfig: billingConfigValue } : {}),
       };
       const backends = previous ? current.map((b) => (b.id === id ? backend : b)) : [...current, backend];
       await savePluginConfig(companyId, { ...config, backends });
@@ -360,6 +432,46 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         <Field label="Prepaid credit" hint="A prepaid balance for this backend (e.g. Gemini prepaid, OpenRouter credits). Stored as a company secret; the plugin reads it during usage sampling and pauses the backend when the credit is exhausted.">
           <input style={{ ...inputStyle, width: "100%" }} type="number" min="0" step="any" value={prepaidCredit} placeholder="0.00" onChange={(e) => setPrepaidCredit(e.target.value)} />
         </Field>
+        <div style={{ borderTop: "1px solid rgba(128,128,128,0.25)", paddingTop: 12, marginTop: 4 }}>
+          <SectionTitle title="BigQuery billing" hint="Read billed costs from a Google BigQuery table (FOCUS export). Stored as company secrets; the plugin reads them during usage sampling." />
+          <Field label="Service account key (JSON)" hint="BigQuery service account JSON with private key. Paste the full JSON here; it will be saved as a company secret.">
+            <textarea
+              style={{ ...inputStyle, width: "100%", minHeight: 80, fontFamily: "ui-monospace, monospace", fontSize: 11 }}
+              value={billingServiceAccount}
+              placeholder='{"type":"service_account","project_id":"...","client_email":"...","private_key":"..."}'
+              onChange={(e) => setBillingServiceAccount(e.target.value)}
+            />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <Field label="Project ID" hint="Google Cloud project ID.">
+              <input style={inputStyle} value={billingProject} placeholder="my-gcp-project" onChange={(e) => setBillingProject(e.target.value)} />
+            </Field>
+            <Field label="Dataset ID" hint="BigQuery dataset ID.">
+              <input style={inputStyle} value={billingDataset} placeholder="focus_exports" onChange={(e) => setBillingDataset(e.target.value)} />
+            </Field>
+            <Field label="Table name" hint="Table with billed cost data.">
+              <input style={inputStyle} value={billingTable} placeholder="billed_cost_export" onChange={(e) => setBillingTable(e.target.value)} />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Button onClick={() => void checkBilling()} disabled={busy !== "" || billingChecking}>
+              {billingChecking ? "Checking…" : "Check billing access"}
+            </Button>
+            <span style={{ flex: 1 }} />
+          </div>
+          {billingPermission ? (
+            <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 10, fontSize: 13 }}>
+              {billingPermission.ok ? (
+                <span>
+                  <Pill tone="ok">Access granted</Pill>{" "}
+                  Table has {billingPermission.rowCount ?? "?"} rows{billingPermission.mostRecentMonth ? ` · most recent month: ${billingPermission.mostRecentMonth}` : ""}
+                </span>
+              ) : (
+                <span style={{ color: "#ef4444" }}>{billingPermission.error}</span>
+              )}
+            </div>
+          ) : null}
+        </div>
         {result ? (
           <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 10, fontSize: 13, display: "grid", gap: 4 }}>
             {result.error ? <span style={{ color: "#ef4444" }}>{result.error}</span> : null}
@@ -466,6 +578,7 @@ const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId:
               <Pill tone="ok">{info.label}</Pill>
               {b.hasKey ? <Pill>key saved</Pill> : null}
               {b.hasPrepaidCredit ? <Pill tone="warn">prepaid credit saved</Pill> : null}
+              {b.hasBillingConfig ? <Pill tone="info">billing configured</Pill> : null}
               <code style={MUTED}>{b.baseUrl || info.defaultBaseUrl || "no address"}</code>
               {backendPrefix(b) ? <span style={MUTED}>models {backendPrefix(b)}…</span> : null}
               <span style={{ flex: 1 }} />

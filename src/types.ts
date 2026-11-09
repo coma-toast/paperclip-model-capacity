@@ -310,3 +310,23 @@ export type Action =
 
 // Whether a run takes one of its pool's model slots.
 export const occupiesSlot = (run: Pick<RunningRun, "waitingOnAgent" | "stalled">) => !run.waitingOnAgent && !run.stalled;
+
+// BigQuery billing config for reading billed costs from a FOCUS export table.
+// Each field is a company secret binding (type: "secret_ref", secretId, version).
+export interface BigQueryConfig {
+  // A company secret holding the BigQuery service account JSON (with private key).
+  serviceAccountKey?: unknown;
+  // A company secret holding the Google Cloud project ID.
+  projectId?: unknown;
+  // A company secret holding the BigQuery dataset ID.
+  datasetId?: unknown;
+  // A company secret holding the BigQuery table name (e.g. "billed_cost_export").
+  tableName?: unknown;
+}
+
+// A minimal BigQuery row returned by the billed-cost query.
+export interface BigQueryCostRow {
+  model: string;
+  cost_usd: number;
+  month: string;
+}

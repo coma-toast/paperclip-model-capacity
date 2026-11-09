@@ -20,6 +20,7 @@ import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { opencodeCopilotToken } from "./opencodeAuth.js";
 import { quotaTokenFor, readSubscriptionWindows } from "./subscriptions.js";
 import { PAPERCLIP_SPEND_SQL, sampleUsage, type BackendUsage, type PaperclipSpend } from "./usage.js";
+import { resolveBillingConfig, readBilledCosts, billedCostsToMeters } from "./billing.js";
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -267,6 +268,17 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     return Number.isFinite(value) && value >= 0 ? value : undefined;
   };
 
+  // Resolve BigQuery billing config from the backend's billingConfig field.
+  const resolveBillingConfigForBackend = async (companyId: string, b: Backend, index: number): Promise<Parameters<typeof readBilledCosts>[0] | null> => {
+    const resolved = await resolveBillingConfig(b.billingConfig, {
+      resolve: async (secretId: string) => {
+        return ctx.secrets.resolve({ secretId } as Parameters<PluginContext["secrets"]["resolve"]>[0], { companyId, configPath: `backends.${index}.billingConfig` }).catch(() => undefined);
+      },
+    });
+    if (!resolved) return null;
+    return resolved;
+  };
+
   const sampleCompany = async (companyId: string) => {
     const samples = await Promise.all((await backendsFor(companyId)).map(async (b, index): Promise<BackendUsage> => {
       let headers: Record<string, string> | undefined;
@@ -284,6 +296,19 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
         const spendUsed = totalSpend?.used ?? 0;
         sample.meters.push({ label: "Prepaid credit", unit: "usd" as const, used: spendUsed, limit: prepaid, remaining: Math.max(0, prepaid - spendUsed) });
         if (spendUsed >= prepaid) sample.notes.push("Prepaid credit exhausted: the pool pauses this backend");
+      }
+      // BigQuery billing: read billed costs from the FOCUS export table.
+      try {
+        const billingCfg = await resolveBillingConfigForBackend(companyId, b, index);
+        if (billingCfg) {
+          const billedRows = await readBilledCosts(billingCfg, (url, init) => ctx.http.fetch(url, init), now());
+          const meters = billedCostsToMeters(billedRows, b.id);
+          sample.meters.push(...meters);
+          if (billedRows.length === 0) sample.notes.push("BigQuery billing: table returned no cost data yet");
+        }
+      } catch (e) {
+        ctx.logger.warn("Model capacity BigQuery billing read failed", { backendId: b.id, error: errText(e) });
+        sample.notes.push(`BigQuery billing: ${e instanceof Error ? e.message : String(e)}`);
       }
       return sample;
     }));

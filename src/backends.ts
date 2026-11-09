@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { APIS, apiInfo, type ApiKind } from "./apis.js";
+import type { BigQueryConfig } from "./types.js";
 
 // A backend is one model endpoint (a proxy, a cloud API or a local engine), defined once per company in the plugin's
 // company config. Pools pick a backend; a proxy pool can also watch local-engine backends. The key is a company secret
@@ -28,13 +29,17 @@ export interface Backend {
   // Prepaid credit for this backend (e.g. Gemini prepaid balance). Stored as a { type: "secret_ref", secretId, version }
   // binding. The worker resolves it during usage sampling and pauses the backend when the credit is exhausted.
   prepaidCredit?: unknown;
+  // BigQuery billing config for reading billed costs from a FOCUS export table.
+  // Stored as a { serviceAccountKey, projectId, datasetId, tableName } object, each value a secret-ref binding.
+  billingConfig?: BigQueryConfig;
 }
 
 // What the UI may see: never the key binding.
-export interface BackendSummary extends Omit<Backend, "key" | "logsKey" | "prepaidCredit"> {
+export interface BackendSummary extends Omit<Backend, "key" | "logsKey" | "prepaidCredit" | "billingConfig"> {
   hasKey: boolean;
   hasLogsKey?: boolean;
   hasPrepaidCredit?: boolean;
+  hasBillingConfig?: boolean;
 }
 
 export const backendPrefix = (b: Pick<Backend, "type" | "prefix">) => b.prefix ?? apiInfo(b.type).defaultPrefix;
@@ -52,7 +57,7 @@ export const readBackends = (config: Record<string, unknown>): Backend[] =>
   Array.isArray(config.backends) ? (config.backends as Backend[]).filter((b) => b && typeof b.id === "string" && typeof b.type === "string") : [];
 
 export const summarizeBackends = (config: Record<string, unknown>): BackendSummary[] =>
-  readBackends(config).map(({ key, logsKey, prepaidCredit, ...rest }) => ({ ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}), ...(prepaidCredit ? { hasPrepaidCredit: true } : {}) }));
+  readBackends(config).map(({ key, logsKey, prepaidCredit, billingConfig, ...rest }) => ({ ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}), ...(prepaidCredit ? { hasPrepaidCredit: true } : {}), ...(billingConfig && Object.keys(billingConfig).length > 0 ? { hasBillingConfig: true } : {}) }));
 
 // Rendered by the host's plugin config form too, so every field gets a title, a description and (where one exists)
 // a default; the Model capacity page's Add/Edit backend form is the main editor. No x-paperclip-advanced: the host's
@@ -91,6 +96,34 @@ export const backendsConfigSchema = {
           format: "secret-ref",
           title: "Prepaid credit",
           description: "A prepaid balance for this backend (e.g. Gemini prepaid, OpenRouter credits). Stored as a company secret; the plugin reads it during usage sampling and pauses the backend when the credit is exhausted.",
+        },
+        billingConfig: {
+          type: "object",
+          title: "BigQuery billing",
+          description: "Read billed costs from a Google BigQuery table (FOCUS export). Each field is stored as a company secret.",
+          additionalProperties: false,
+          properties: {
+            serviceAccountKey: {
+              format: "secret-ref",
+              title: "Service account key",
+              description: "BigQuery service account JSON (with private key), stored as a company secret.",
+            },
+            projectId: {
+              format: "secret-ref",
+              title: "Project ID",
+              description: "Google Cloud project ID that holds the BigQuery dataset.",
+            },
+            datasetId: {
+              format: "secret-ref",
+              title: "Dataset ID",
+              description: "BigQuery dataset ID (e.g. \"focus_exports\").",
+            },
+            tableName: {
+              format: "secret-ref",
+              title: "Table name",
+              description: "BigQuery table name with billed cost data (e.g. \"billed_cost_export\").",
+            },
+          },
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
