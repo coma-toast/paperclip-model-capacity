@@ -255,8 +255,20 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     return row ? { monthUsd: Number(row.month_usd ?? 0), freeRuns: Number(row.free_runs ?? 0), freeTokens: Number(row.free_tokens ?? 0) } : undefined;
   };
 
+  // Resolve a prepaid credit secret binding to its numeric value.
+  const readPrepaidCredit = async (companyId: string, b: Backend, index: number): Promise<number | undefined> => {
+    const binding = b.prepaidCredit as Record<string, unknown> | undefined;
+    if (!binding || typeof binding !== "object") return undefined;
+    const secretId = binding.secretId as string | undefined;
+    if (!secretId) return undefined;
+    const token = await ctx.secrets.resolve({ secretId } as Parameters<PluginContext["secrets"]["resolve"]>[0], { companyId, configPath: `backends.${index}.prepaidCredit` }).catch(() => undefined);
+    if (!token) return undefined;
+    const value = Number(token);
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  };
+
   const sampleCompany = async (companyId: string) => {
-    const samples = await Promise.all((await backendsFor(companyId)).map(async (b): Promise<BackendUsage> => {
+    const samples = await Promise.all((await backendsFor(companyId)).map(async (b, index): Promise<BackendUsage> => {
       let headers: Record<string, string> | undefined;
       try {
         headers = await backendAuth.headersFor(companyId, b.id);
@@ -265,7 +277,15 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       }
       const logsHeaders = b.type === "litellm" ? await backendAuth.logsHeadersFor(companyId, b.id).catch(() => undefined) : undefined;
       const paperclipSpend = b.type === "opencode" ? () => readPaperclipSpend(companyId, b) : undefined;
-      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, paperclipSpend, now });
+      const sample = await sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, paperclipSpend, now });
+      const prepaid = await readPrepaidCredit(companyId, b, index);
+      if (prepaid !== undefined) {
+        const totalSpend = sample.meters.find((m) => m.unit === "usd" && m.used !== undefined && /(?:account|total|key) credit|spent/i.test(m.label));
+        const spendUsed = totalSpend?.used ?? 0;
+        sample.meters.push({ label: "Prepaid credit", unit: "usd" as const, used: spendUsed, limit: prepaid, remaining: Math.max(0, prepaid - spendUsed) });
+        if (spendUsed >= prepaid) sample.notes.push("Prepaid credit exhausted: the pool pauses this backend");
+      }
+      return sample;
     }));
     await store.companyUsage(companyId).set(Object.fromEntries((await withSpentToday(companyId, samples)).map((s) => [s.backendId, s])));
     await refreshEngineAliases(companyId);

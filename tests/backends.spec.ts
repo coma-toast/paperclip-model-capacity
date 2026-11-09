@@ -18,6 +18,14 @@ describe("backends", () => {
     expect(readBackends({})).toEqual([]);
   });
 
+  it("reports hasPrepaidCredit when the backend has a prepaid credit binding", () => {
+    const PREPAID = { type: "secret_ref", secretId: "aaaa-bbbb-cccc-dddd" };
+    const config = { backends: [{ id: "gemini", name: "Gemini", type: "openai", baseUrl: "https://gemini", key: KEY, prepaidCredit: PREPAID }] };
+    const summary = summarizeBackends(config);
+    expect(summary[0].hasPrepaidCredit).toBe(true);
+    expect(summary[0]).toMatchObject({ id: "gemini", name: "Gemini", type: "openai", hasKey: true, hasPrepaidCredit: true });
+  });
+
   it("falls back to the type's prefix and address", () => {
     expect(backendPrefix({ type: "litellm" })).toBe("litellm/");
     expect(backendPrefix({ type: "litellm", prefix: "" })).toBe("");

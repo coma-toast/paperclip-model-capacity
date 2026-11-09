@@ -163,6 +163,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
   const [key, setKey] = useState("");
   // A key taken from a Paperclip connection: the backend binds the connection's own secret.
   const [connectionKey, setConnectionKey] = useState<{ name: string; binding: SecretBinding }>();
+  // Prepaid credit: a plain number saved as a company secret, bound via prepaidCredit.
+  const [prepaidCredit, setPrepaidCredit] = useState(initial?.hasPrepaidCredit ? "" : "");
+  const [prepaidCreditBinding, setPrepaidCreditBinding] = useState<SecretBinding>();
   const [connections, setConnections] = useState<AiConnection[]>([]);
   useEffect(() => {
     listAiConnections(companyId).then(setConnections).catch(() => setConnections([]));
@@ -200,6 +203,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
     if (!name) return setProblem("Give the backend a name.");
     if (needsAddress && !address) return setProblem(`Enter the address, e.g. ${info.placeholderUrl}.`);
     if (address && !/^https?:\/\//.test(address)) return setProblem("The address must start with http:// or https://");
+    if (prepaidCredit.trim() && isNaN(Number(prepaidCredit.trim()))) return setProblem("Prepaid credit must be a number.");
     setBusy("save");
     setProblem(undefined);
     try {
@@ -211,6 +215,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
       const keyBinding = key.trim()
         ? await createCompanySecret(companyId, `Model capacity: ${name} key (${new Date().toISOString().slice(0, 16)})`, key.trim())
         : connectionKey?.binding ?? previous?.key;
+      const prepaidCreditBindingValue = prepaidCredit.trim()
+        ? await createCompanySecret(companyId, `Model capacity: ${name} prepaid credit (${new Date().toISOString().slice(0, 16)})`, prepaidCredit.trim())
+        : prepaidCreditBinding ?? previous?.prepaidCredit;
       const backend: Backend = {
         id, name, type: draft.type,
         // Stored explicitly (defaults included) so the host's config form shows them too.
@@ -221,6 +228,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
         ...(keyBinding ? { key: keyBinding } : {}),
+        ...(prepaidCreditBindingValue ? { prepaidCredit: prepaidCreditBindingValue } : {}),
       };
       const backends = previous ? current.map((b) => (b.id === id ? backend : b)) : [...current, backend];
       await savePluginConfig(companyId, { ...config, backends });
@@ -309,6 +317,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
             <Field label="Scheme" hint="Put before the key; empty for none."><input style={inputStyle} value={draft.scheme ?? "Bearer"} onChange={(e) => set({ scheme: e.target.value })} /></Field>
           </div>
         ) : null}
+        <Field label="Prepaid credit" hint="A prepaid balance for this backend (e.g. Gemini prepaid, OpenRouter credits). Stored as a company secret; the plugin reads it during usage sampling and pauses the backend when the credit is exhausted.">
+          <input style={{ ...inputStyle, width: "100%" }} type="number" min="0" step="any" value={prepaidCredit} placeholder="0.00" onChange={(e) => setPrepaidCredit(e.target.value)} />
+        </Field>
         {result ? (
           <div style={{ border: "1px dashed rgba(128,128,128,0.45)", borderRadius: 8, padding: 10, fontSize: 13, display: "grid", gap: 4 }}>
             {result.error ? <span style={{ color: "#ef4444" }}>{result.error}</span> : null}
@@ -414,6 +425,7 @@ const BackendsSection = ({ companyId, backends, pools, onChanged }: { companyId:
               <strong>{b.name}</strong>
               <Pill tone="ok">{info.label}</Pill>
               {b.hasKey ? <Pill>key saved</Pill> : null}
+              {b.hasPrepaidCredit ? <Pill tone="warn">prepaid credit saved</Pill> : null}
               <code style={MUTED}>{b.baseUrl || info.defaultBaseUrl || "no address"}</code>
               {backendPrefix(b) ? <span style={MUTED}>models {backendPrefix(b)}…</span> : null}
               <span style={{ flex: 1 }} />

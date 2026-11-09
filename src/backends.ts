@@ -25,12 +25,16 @@ export interface Backend {
   reachVia?: string;
   // The model name agents use to reach this engine, e.g. "litellm/mbp"; the plugin pins tasks onto it.
   reachModel?: string;
+  // Prepaid credit for this backend (e.g. Gemini prepaid balance). Stored as a { type: "secret_ref", secretId, version }
+  // binding. The worker resolves it during usage sampling and pauses the backend when the credit is exhausted.
+  prepaidCredit?: unknown;
 }
 
 // What the UI may see: never the key binding.
-export interface BackendSummary extends Omit<Backend, "key" | "logsKey"> {
+export interface BackendSummary extends Omit<Backend, "key" | "logsKey" | "prepaidCredit"> {
   hasKey: boolean;
   hasLogsKey?: boolean;
+  hasPrepaidCredit?: boolean;
 }
 
 export const backendPrefix = (b: Pick<Backend, "type" | "prefix">) => b.prefix ?? apiInfo(b.type).defaultPrefix;
@@ -48,7 +52,7 @@ export const readBackends = (config: Record<string, unknown>): Backend[] =>
   Array.isArray(config.backends) ? (config.backends as Backend[]).filter((b) => b && typeof b.id === "string" && typeof b.type === "string") : [];
 
 export const summarizeBackends = (config: Record<string, unknown>): BackendSummary[] =>
-  readBackends(config).map(({ key, logsKey, ...rest }) => ({ ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}) }));
+  readBackends(config).map(({ key, logsKey, prepaidCredit, ...rest }) => ({ ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}), ...(prepaidCredit ? { hasPrepaidCredit: true } : {}) }));
 
 // Rendered by the host's plugin config form too, so every field gets a title, a description and (where one exists)
 // a default; the Model capacity page's Add/Edit backend form is the main editor. No x-paperclip-advanced: the host's
@@ -82,6 +86,11 @@ export const backendsConfigSchema = {
           format: "secret-ref",
           title: "Admin key for usage logs",
           description: "LiteLLM only, optional: a read-only admin key (role proxy_admin_viewer). Lets the plugin count each upstream model's requests today for the upstream quotas.",
+        },
+        prepaidCredit: {
+          format: "secret-ref",
+          title: "Prepaid credit",
+          description: "A prepaid balance for this backend (e.g. Gemini prepaid, OpenRouter credits). Stored as a company secret; the plugin reads it during usage sampling and pauses the backend when the credit is exhausted.",
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
