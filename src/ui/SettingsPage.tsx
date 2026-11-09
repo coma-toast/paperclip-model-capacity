@@ -3,7 +3,7 @@ import { Spinner, usePluginAction, usePluginData, usePluginToast, type PluginCom
 
 import type { AgentModelUse } from "../agentModels.js";
 import type { InspectHostResult } from "../api.js";
-import { APIS, addPrefix, apiInfo, backendFromConnection, frontsEngines, hasEndpoint, stripPrefix, type ApiKind } from "../apis.js";
+import { APIS, addPrefix, apiInfo, backendFromConnection, frontsEngines, hasEndpoint, stripPrefix, type ApiKind, BACKEND_PRESETS, type BackendPreset } from "../apis.js";
 import { backendForModel, backendPrefix, type Backend, type BackendSummary } from "../backends.js";
 import { VIRTUAL_MODEL_PREFIX, virtualModel } from "../constants.js";
 import type { ListModelsResult } from "../models.js";
@@ -190,6 +190,14 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
   const set = (patch: Partial<Omit<Backend, "key">>) => { setDraft({ ...draft, ...patch }); setResult(null); };
   const needsAddress = !info.defaultBaseUrl && hasEndpoint(draft.type);
 
+  // Apply a preset: fills type, baseUrl, prefix, name and (for local) slots, then scrolls into view.
+  const applyPreset = (preset: BackendPreset) => {
+    const presetBaseUrl = preset.type === "openai" && preset.description.includes("Gemini")
+      ? "https://generativelanguage.googleapis.com/v1beta"
+      : apiInfo(preset.type).defaultBaseUrl;
+    set({ type: preset.type, baseUrl: presetBaseUrl || undefined, prefix: undefined, name: preset.label, slots: apiInfo(preset.type).group === "local" ? 1 : undefined });
+  };
+
   const runTest = async () => {
     setBusy("test");
     const r = (await test({ companyId, backend: { ...draft, id: initial?.id }, key }).catch((e: Error) => ({ ok: false, error: e.message }))) as { ok: boolean; error?: string; models?: ListModelsResult; server?: InspectResult };
@@ -255,6 +263,38 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
               })}
             </select>
           </Field>
+        ) : null}
+        {!initial && (connections.length || taken.length === 0) ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <strong style={{ fontSize: 13 }}>Quick setup from template</strong>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+              {BACKEND_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => applyPreset(p)}
+                  style={{
+                    ...inputStyle,
+                    textAlign: "left",
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid rgba(128,128,128,0.35)",
+                    background: "rgba(255,255,255,0.03)",
+                    cursor: "pointer",
+                    transition: "border-color 0.15s",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(59,130,246,0.6)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(128,128,128,0.35)")}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</div>
+                  <div style={{ fontSize: 11, color: "rgba(128,128,128,0.8)", marginTop: 2 }}>{p.description}</div>
+                  <div style={{ fontSize: 10, marginTop: 4, color: p.needs === "key" ? "#f59e0b" : p.needs === "address" ? "#3b82f6" : "#22c55e" }}>
+                    {p.needs === "key" ? "Needs API key" : p.needs === "address" ? "Needs address" : "No key needed"}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
         ) : null}
         <Field label="Type" hint={info.hint}>
           <select style={inputStyle} value={draft.type} onChange={(e) => set({ type: e.target.value as ApiKind, prefix: undefined, baseUrl: undefined })}>

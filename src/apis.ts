@@ -57,6 +57,30 @@ export const inferApi = (patterns: string[]): ApiKind => {
 export const stripPrefix = (prefix: string, pattern: string) => (prefix && pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern);
 export const addPrefix = (prefix: string, name: string) => (!prefix || name.startsWith(prefix) ? name : `${prefix}${name}`);
 
+// A backend preset: a quick-setup template that fills type, address, prefix and (for local engines) slots.
+// The UI shows these as clickable cards; clicking one auto-fills the backend form.
+export interface BackendPreset {
+  // Display label for the preset card.
+  label: string;
+  // Short description shown under the label.
+  description: string;
+  // The API kind to use.
+  type: ApiKind;
+  // What the user needs to supply: "key" for an API key, "address" for a local engine URL, "nothing" for cloud.
+  needs: "key" | "address" | "nothing";
+}
+
+export const BACKEND_PRESETS: readonly BackendPreset[] = [
+  { label: "LiteLLM proxy", description: "Your own proxy that routes to many providers", type: "litellm", needs: "nothing" },
+  { label: "OpenAI", description: "api.openai.com", type: "openai", needs: "key" },
+  { label: "OpenRouter", description: "Browse 200+ models from one API", type: "openrouter", needs: "key" },
+  { label: "Gemini (Google)", description: "gemini-2.5-pro, flash, etc.", type: "openai", needs: "key" },
+  { label: "GitHub Copilot", description: "Your Copilot subscription", type: "copilot", needs: "nothing" },
+  { label: "Ollama", description: "Local models on your machine", type: "ollama", needs: "address" },
+  { label: "LM Studio", description: "Local LM Studio server", type: "lmstudio", needs: "address" },
+  { label: "vLLM", description: "Local vLLM serving", type: "vllm", needs: "address" },
+];
+
 // A Paperclip AI connection ("Connections" in company settings), as far as a backend needs it.
 export interface AiConnectionLike {
   provider: string;

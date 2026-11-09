@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addPrefix, backendFromConnection, frontsEngines, hasEndpoint, inferApi, poolPrefix, stripPrefix } from "../src/apis.js";
+import { addPrefix, apiInfo, BACKEND_PRESETS, backendFromConnection, frontsEngines, hasEndpoint, inferApi, poolPrefix, stripPrefix } from "../src/apis.js";
 
 describe("API prefixes", () => {
   it("adds and strips a prefix, leaving other names alone", () => {
@@ -39,5 +39,37 @@ describe("backend groups", () => {
     expect([frontsEngines("direct"), hasEndpoint("direct")]).toEqual([true, false]);
     expect([frontsEngines("litellm"), hasEndpoint("litellm")]).toEqual([true, true]);
     expect([frontsEngines("ollama"), hasEndpoint("ollama")]).toEqual([false, true]);
+  });
+});
+
+describe("BACKEND_PRESETS", () => {
+  it("covers the common providers and local engines", () => {
+    const labels = BACKEND_PRESETS.map((p) => p.label);
+    expect(labels).toContain("LiteLLM proxy");
+    expect(labels).toContain("OpenRouter");
+    expect(labels).toContain("Ollama");
+    expect(labels).toContain("vLLM");
+  });
+
+  it("each preset has a valid API kind and a needs value", () => {
+    for (const p of BACKEND_PRESETS) {
+      expect(apiInfo(p.type).kind).toBe(p.type);
+      expect(["key", "address", "nothing"]).toContain(p.needs);
+    }
+  });
+
+  it("maps Gemini to openai kind with key needed", () => {
+    const gemini = BACKEND_PRESETS.find((p) => p.label.includes("Gemini"));
+    expect(gemini).toBeDefined();
+    expect(gemini!.type).toBe("openai");
+    expect(gemini!.needs).toBe("key");
+  });
+
+  it("local engine presets need address", () => {
+    const local = BACKEND_PRESETS.filter((p) => p.needs === "address");
+    expect(local.length).toBeGreaterThanOrEqual(3);
+    for (const p of local) {
+      expect(apiInfo(p.type).group).toBe("local");
+    }
   });
 });
