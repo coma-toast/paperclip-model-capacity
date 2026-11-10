@@ -60,16 +60,18 @@ export const dbFailureReader = (ctx: PluginContext): FailureReader => async () =
 export const IDLE_SQL =
   "SELECT i.id::text AS issue_id FROM public.issues i " +
   "CROSS JOIN LATERAL (SELECT MAX(r.finished_at) AS ended FROM public.heartbeat_runs r WHERE r.company_id = i.company_id AND r.issue_id = i.id) lr " +
-  "WHERE i.id = ANY($1::uuid[]) AND lr.ended IS NOT NULL " +
+  "WHERE i.id = ANY(string_to_array($1, ',')::uuid[]) AND lr.ended IS NOT NULL " +
   "AND NOT EXISTS (SELECT 1 FROM public.issue_comments c WHERE c.company_id = i.company_id AND c.issue_id = i.id AND c.deleted_at IS NULL " +
-  "AND c.author_type IN ('user', 'agent') AND c.author_agent_id IS DISTINCT FROM i.assignee_agent_id AND c.created_at > lr.ended) " +
+  // No "IS DISTINCT FROM": the host's SQL check reads "FROM i.x" as a table in schema "i".
+  "AND c.author_type IN ('user', 'agent') AND (c.author_agent_id IS NULL OR c.author_agent_id <> i.assignee_agent_id) AND c.created_at > lr.ended) " +
   "AND NOT EXISTS (SELECT 1 FROM public.issues ch WHERE ch.parent_id = i.id AND ch.status IN ('done', 'cancelled') AND ch.completed_at > lr.ended)";
+// The ids go in as one comma-separated text parameter: the host binds a JS array as a list, not a Postgres array.
 // Returns undefined when the core tables can't be read; then no task counts as idle (the old behaviour).
 export type IdleReader = (issueIds: string[]) => Promise<string[] | undefined>;
 export const dbIdleReader = (ctx: PluginContext): IdleReader => async (issueIds) => {
   if (!issueIds.length) return [];
   try {
-    return (await ctx.db.query<{ issue_id: string }>(IDLE_SQL, [issueIds])).map((r) => r.issue_id);
+    return (await ctx.db.query<{ issue_id: string }>(IDLE_SQL, [issueIds.join(",")])).map((r) => r.issue_id);
   } catch (e) {
     ctx.logger.warn("Idle-task read failed; treating every open task as wanting a run", { error: e instanceof Error ? e.message : String(e) });
     return undefined;

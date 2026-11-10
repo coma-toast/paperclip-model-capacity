@@ -44,8 +44,10 @@ describe("idle tasks", () => {
   });
 
   it("reads only comments from someone other than the assignee and children closed after the last run", () => {
-    expect(IDLE_SQL).toContain("c.author_type IN ('user', 'agent') AND c.author_agent_id IS DISTINCT FROM i.assignee_agent_id AND c.created_at > lr.ended");
+    expect(IDLE_SQL).toContain("c.author_type IN ('user', 'agent') AND (c.author_agent_id IS NULL OR c.author_agent_id <> i.assignee_agent_id) AND c.created_at > lr.ended");
     expect(IDLE_SQL).toContain("ch.completed_at > lr.ended");
+    // The host's check takes any "FROM <word>.<word>" for a table; only public.* may follow FROM or JOIN.
+    expect([...IDLE_SQL.matchAll(/\b(?:from|join)\s+(\w+)\./gi)].map((m) => m[1])).toEqual(["public", "public", "public", "public"]);
     expect(manifest.database?.coreReadTables).toEqual(expect.arrayContaining(["heartbeat_runs", "issues", "issue_comments"]));
   });
 });

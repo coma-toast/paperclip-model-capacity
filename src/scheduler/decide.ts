@@ -140,9 +140,9 @@ const stickyActions = (input: {
       const ownOut = !ownModels.some((x) => !exhausted(x.model));
       const more = left?.[own] !== undefined && left?.[other] !== undefined && left[other]! >= left[own]! + SWITCH_MARGIN;
       if (!ownOut && !more) continue;
-      const to = otherModels.find((x) => !exhausted(x.model))!;
       out.push({
-        kind: "switchAdapter", agentId: a.id, companyId: a.companyId, poolId: pool.id, fromAdapterType: a.adapterType!, toAdapterType: PROVIDER_ADAPTER[other], model: to.model,
+        // The agent keeps the pool's name: its tasks are placed on `to`'s side's models, and it can switch back later.
+        kind: "switchAdapter", agentId: a.id, companyId: a.companyId, poolId: pool.id, fromAdapterType: a.adapterType!, toAdapterType: PROVIDER_ADAPTER[other], model: agentModelName,
         reason: ownOut ? "own subscription used up" : `${left![other]}% left vs ${left![own]}%`,
       });
       switching.add(a.id);
