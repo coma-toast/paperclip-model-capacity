@@ -886,6 +886,12 @@ const KindPoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgents
             <input type="checkbox" checked={pool.allowOverQuota === true} onChange={(e) => onChange({ allowOverQuota: e.target.checked || undefined })} />
             <span>Keep going over the quota<br /><span style={MUTED}>When a backend or subscription reports its quota used up, keep giving these models tasks instead of pausing them. Only where overage is billed or covered (Copilot premium requests past the allowance, ChatGPT credits past the weekly limit); otherwise the requests just fail. A run that fails with a rate- or usage-limit message still pauses its model.</span></span>
           </label>
+          {pool.subscription && !pool.allowOverQuota ? (
+            <Field label="Models that run on extra usage" hint="Optional, comma-separated. These keep taking tasks on the subscription's extra usage after its limits are used up (until the extra-usage pool is), while the pool's other models pause. E.g. claude-opus-5-5, so Opus takes over when Fable's limit or the weekly limit is reached." error={err("overQuotaModels")}>
+              <input style={inputStyle} placeholder="None" defaultValue={(pool.overQuotaModels ?? []).join(", ")}
+                onBlur={(e) => { const list = e.target.value.split(",").map((m) => m.trim()).filter(Boolean); onChange({ overQuotaModels: list.length ? list : undefined }); }} />
+            </Field>
+          ) : null}
           <Field label="Browse models from" hint={`Only picks which models the list shows; switching keeps the ones you ticked. Each model goes through the backend its name starts with (litellm/… through LiteLLM), and pauses on that backend's limits. Bare Claude and GPT names are subscription models.${models.length ? ` This pool uses: ${modelBackends.join(", ")}.` : ""}`} error={err("backend")}>
             <select style={inputStyle} value={browse} onChange={(e) => setBrowse(e.target.value)}>
               <option value="">Subscription and agents' models</option>

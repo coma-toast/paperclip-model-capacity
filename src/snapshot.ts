@@ -322,7 +322,7 @@ const exhaustedModels = async (input: {
     const windows = (await store.subscriptionWindows(pool.companyId!).get()) ?? undefined;
     for (const t of pool.placement ?? []) {
       const provider = pool.subscription === "both" ? modelProvider(t.model) : pool.subscription;
-      const used = provider ? subscriptionExhausted(windows, provider, now) : undefined;
+      const used = provider ? subscriptionExhausted(windows, provider, now, { model: t.model, overQuota: pool.overQuotaModels?.includes(t.model) }) : undefined;
       const key = `${pool.companyId}|${t.model}`;
       if (used && !current[key]) current[key] = used;
     }

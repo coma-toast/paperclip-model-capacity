@@ -42,21 +42,41 @@ export const readSubscriptionWindows = async (companyId: string, deps: { fetch: 
   }
 };
 
+const EXTRA_USAGE = /extra usage/i;
+// A window named for one model family, like "Current week (Fable)", limits only that family's models; "(all models)"
+// or no family limits every model.
+export const windowFamily = (label: string) => {
+  const m = /\(([^)]+)\)\s*$/.exec(label);
+  const family = m?.[1].trim().toLowerCase();
+  return family && family !== "all models" ? family : undefined;
+};
+// The windows that limit `model`: its family's and the shared ones. A model allowed to run on extra usage is limited
+// only by the extra-usage pool; the others ignore that pool.
+const limiting = (windows: SubscriptionWindow[], opts: { model?: string; overQuota?: boolean }) =>
+  windows.filter((w) => {
+    if (opts.overQuota) return EXTRA_USAGE.test(w.label);
+    if (EXTRA_USAGE.test(w.label)) return false;
+    const family = windowFamily(w.label);
+    return !family || !opts.model || opts.model.toLowerCase().includes(family);
+  });
+
 // A provider is used up when every connected account of it has a window at 100 %. It comes back when the first
-// account's blocking windows have all reset (an account frees up at its latest blocking reset).
-export const subscriptionExhausted = (sample: SubscriptionSample | undefined, provider: SubscriptionProvider, now: Date) => {
+// account's blocking windows have all reset (an account frees up at its latest blocking reset). With a model, only the
+// windows that limit it count.
+export const subscriptionExhausted = (sample: SubscriptionSample | undefined, provider: SubscriptionProvider, now: Date, opts: { model?: string; overQuota?: boolean } = {}) => {
   const accounts = (sample?.accounts ?? []).filter((a) => a.ok && a.provider === provider);
   if (!accounts.length) return undefined;
   const freeAt: (number | undefined)[] = [];
+  let label: string | undefined;
   for (const a of accounts) {
-    const blocking = a.windows.filter((w) => w.usedPercent !== null && w.usedPercent >= 100 && (!w.resetsAt || Date.parse(w.resetsAt) > now.getTime()));
+    const blocking = limiting(a.windows, opts).filter((w) => w.usedPercent !== null && w.usedPercent >= 100 && (!w.resetsAt || Date.parse(w.resetsAt) > now.getTime()));
+    label ??= blocking[0]?.label;
     if (!blocking.length) return undefined;
     const resets = blocking.map((w) => (w.resetsAt ? Date.parse(w.resetsAt) : NaN));
     freeAt.push(resets.some(Number.isNaN) ? undefined : Math.max(...resets));
   }
   const known = freeAt.filter((t): t is number => t !== undefined);
   const until = known.length === freeAt.length ? new Date(Math.min(...known)).toISOString() : undefined;
-  const label = accounts.flatMap((a) => a.windows.filter((w) => (w.usedPercent ?? 0) >= 100).map((w) => w.label))[0];
   return { until, reason: `${provider === "anthropic" ? "Claude" : "ChatGPT"} subscription ${label ? `${label} ` : ""}used up` };
 };
 

@@ -73,6 +73,9 @@ export interface PoolConfig {
   // (overage billed, e.g. Copilot premium requests past the allowance, or ChatGPT credits past the weekly limit).
   // Rate-limit and usage-limit errors from runs still pause a model.
   allowOverQuota?: boolean;
+  // Subscription pools: these models keep running on the provider's extra usage once its windows are used up (until
+  // the extra-usage pool is), while the pool's other models pause. E.g. Opus continues past the weekly limit, Fable waits.
+  overQuotaModels?: string[];
   // Quota pools for a subscription (Claude, ChatGPT/Codex): pause the pool's models while every account of it is at 100%.
   // "both": each model by its own provider (Haiku with Claude, Terra with ChatGPT), for a pool spanning both.
   subscription?: "anthropic" | "openai" | "both";
