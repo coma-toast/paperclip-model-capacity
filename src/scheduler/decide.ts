@@ -315,7 +315,11 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     // operator holds the pool (F2), or while every host is down (E3).
     let used = count;
     queue.sort(byQueueOrder);
-    const paused = heldPools.has(pool.id) || pool.disabled === true;
+    // A quota pool that keeps its name (no placement) can't move a task to another model, so it holds everything while
+    // every one of its models is paused (prepaid credit or quota used up).
+    const ownModels = pool.kind === "quota" ? pool.patterns.filter((m) => m !== virtualModel(pool.localId ?? pool.id)) : [];
+    const allPaused = ownModels.length > 0 && ownModels.every((m) => snapshot.exhausted?.[`${pool.companyId ?? group.companyId}|${m}`]);
+    const paused = heldPools.has(pool.id) || pool.disabled === true || allPaused;
     if (!paused && anyHostUp(pool, snapshot)) {
       // A task whose last wake-up started no run stays queued and is passed over.
       const ready = queue.filter((e) => !snapshot.wakeCooldown?.[e.issueId]);

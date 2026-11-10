@@ -25,6 +25,9 @@ export interface Backend {
   reachVia?: string;
   // The model name agents use to reach this engine, e.g. "litellm/mbp"; the plugin pins tasks onto it.
   reachModel?: string;
+  // LiteLLM only: prepaid credit with an upstream provider (e.g. Gemini API prepaid billing). The plugin reads what
+  // LiteLLM has spent on that provider since `since` and pauses its models once it reaches the credit.
+  prepaid?: { provider: string; credit: number; since: string }[];
 }
 
 // What the UI may see: never the key binding.
@@ -82,6 +85,18 @@ export const backendsConfigSchema = {
           format: "secret-ref",
           title: "Admin key for usage logs",
           description: "LiteLLM only, optional: a read-only admin key (role proxy_admin_viewer). Lets the plugin count each upstream model's requests today for the upstream quotas.",
+        },
+        prepaid: {
+          type: "array", title: "Prepaid credit",
+          description: "LiteLLM only, needs the admin key: prepaid credit with an upstream provider. The plugin counts LiteLLM's spend on that provider since the date and pauses its models when the credit is used up.",
+          items: {
+            type: "object", required: ["provider", "credit", "since"],
+            properties: {
+              provider: { type: "string", title: "Provider", description: "LiteLLM's provider name, e.g. gemini." },
+              credit: { type: "number", title: "Credit (USD)", minimum: 0 },
+              since: { type: "string", title: "Since", description: "When this credit was loaded (YYYY-MM-DD)." },
+            },
+          },
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },

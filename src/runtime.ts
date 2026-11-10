@@ -265,7 +265,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       }
       const logsHeaders = b.type === "litellm" ? await backendAuth.logsHeadersFor(companyId, b.id).catch(() => undefined) : undefined;
       const paperclipSpend = b.type === "opencode" ? () => readPaperclipSpend(companyId, b) : undefined;
-      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, paperclipSpend, now });
+      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, ...(b.prepaid?.length ? { prepaid: b.prepaid } : {}), paperclipSpend, now });
     }));
     await store.companyUsage(companyId).set(Object.fromEntries((await withSpentToday(companyId, samples)).map((s) => [s.backendId, s])));
     await refreshEngineAliases(companyId);

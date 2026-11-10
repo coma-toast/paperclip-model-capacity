@@ -699,7 +699,13 @@ const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <SectionTitle title="Agents on this pool" hint="Agents use the pool instead of a specific model by pointing at its agent model." />
-      {pool.kind ? <span style={{ fontSize: 13 }}>Agents use <code>{agentModel}</code>; the pool picks {pool.kind === "engine" ? "the engine" : "a model with quota left"} for each task.</span> : null}
+      {pool.kind ? <span style={{ fontSize: 13 }}>Agents use <code>{agentModel}</code>; {pool.keepPoolName ? "tasks keep that name and the pool only counts and queues them" : `the pool picks ${pool.kind === "engine" ? "the engine" : "a model with quota left"} for each task`}.</span> : null}
+      {pool.kind ? (
+        <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
+          <input type="checkbox" checked={pool.keepPoolName === true} disabled={pool.switchAdapters === true} onChange={(e) => onChange({ keepPoolName: e.target.checked || undefined })} />
+          <span>Keep the pool name on tasks<br /><span style={MUTED}>Never pin a task to one of the pool's models: tasks keep <code>{agentModel}</code> and the agent's runtime picks the model. Only for OpenCode agents through LiteLLM, where LiteLLM has a model named after the pool. Claude Code and Codex can't run a pool name.</span></span>
+        </label>
+      ) : null}
       {pool.kind === "quota" ? (
         <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
           <input type="checkbox" checked={pool.switchAdapters === true} onChange={(e) => onChange({ switchAdapters: e.target.checked || undefined })} />

@@ -274,11 +274,13 @@ const exhaustedModels = async (input: {
   for (const pool of pools.filter((p) => p.kind === "quota" && p.companyId && !p.allowOverQuota)) {
     const usage = await store.companyUsage(pool.companyId!).get();
     const backends = backendsFor ? await backendsFor(pool.companyId!) : [];
-    for (const t of pool.placement ?? []) {
+    // A pool that keeps its name has no placement; its own models (not the pool name) are what pause.
+    const targets = pool.placement ?? pool.patterns.filter((m) => m !== virtualModel(pool.localId ?? pool.id)).map((model) => ({ model, backendId: undefined as string | undefined }));
+    for (const t of targets) {
       const backendId = t.backendId ?? pool.endpoint?.backendId;
       const proxy = backends.find((b) => b.id === backendId);
       const upstreams = proxy ? usage[proxy.id]?.upstreams?.[stripPrefix(backendPrefix(proxy), t.model)] : undefined;
-      const upstream = upstreams ? upstreamQuota(upstreams, backends, usage, proxy ? usage[proxy.id]?.upstreamRequests : undefined, now, proxy ? usage[proxy.id]?.upstreamLimits : undefined) : undefined;
+      const upstream = upstreams ? upstreamQuota(upstreams, backends, usage, proxy ? usage[proxy.id]?.upstreamRequests : undefined, now, proxy ? usage[proxy.id]?.upstreamLimits : undefined, proxy ? usage[proxy.id]?.upstreamPrepaid : undefined) : undefined;
       if (upstream?.exhausted && upstream.meter) {
         current[`${pool.companyId}|${t.model}`] = { until: upstream.meter.resetAt, reason: `${upstream.meter.label} used up` };
         continue;

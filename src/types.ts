@@ -79,6 +79,10 @@ export interface PoolConfig {
   // Quota pools across both subscriptions: an idle agent on the pool's virtual model with a task waiting is switched
   // between Claude Code and Codex, to the subscription that has quota left (or clearly more of it).
   switchAdapters?: boolean;
+  // Never pin tasks to one of the pool's models: tasks keep the pool name (pool/<id>) and the pool only counts, holds
+  // and releases them. For agents whose runtime resolves the pool name itself (OpenCode through LiteLLM, which has a
+  // model named after the pool). Claude Code and Codex can't run a pool name, so their pools must keep pinning.
+  keepPoolName?: boolean;
   // The model agents point at to use this pool instead of a specific model (one of the pool's models; for a sticky
   // pool, an entry model, so the pool picks the engine). It must work on its own too, for runs that have no task.
   agentModel?: string;

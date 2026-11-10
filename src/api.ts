@@ -16,7 +16,7 @@ import { inspectHost, type InspectResult } from "./probes/inspect.js";
 import type { Runtime } from "./runtime.js";
 import { availableCapacity } from "./scheduler/decide.js";
 import { validatePools, type FieldError } from "./settings.js";
-import { providerQuotas } from "./upstream.js";
+import { PROVIDER_NAMES, providerQuotas } from "./upstream.js";
 import { occupiesSlot, type Action, type AlertEvent, type EngineKind, type HeldTask, type PlacementTarget, type PoolConfig, type Snapshot } from "./types.js";
 import type { BackendUsage, UsageMeter } from "./usage.js";
 
@@ -187,7 +187,7 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     // A proxy's upstream providers get one quota each (OpenRouter's free requests, Gemini's and Groq's requests today
     // against their daily limits, NVIDIA NIM's count), added to its own meters.
     const withUpstream = (sample: BackendUsage | undefined): BackendUsage | undefined =>
-      !sample?.upstreams ? sample : { ...sample, meters: [...sample.meters, ...providerQuotas(sample.upstreams, backends, usage, sample.upstreamRequests, now(), sample.upstreamLimits)] };
+      !sample?.upstreams ? sample : { ...sample, meters: [...sample.meters, ...providerQuotas(sample.upstreams, backends, usage, sample.upstreamRequests, now(), sample.upstreamLimits, sample.upstreamPrepaid)] };
     return backends.map((b) => ({
       id: b.id, name: b.name, type: b.type,
       usage: apiInfo(b.type).group === "local" ? withDerived(usage[b.id], runsOn(b)) : withUpstream(usage[b.id]),
@@ -239,7 +239,8 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     const paused = (model: string) => snapshot.exhausted?.[`${companyId}|${model}`];
     // The pool's runs now, and whether each takes a slot (a queued run waiting for its agent doesn't).
     const runs = snapshot.runs.filter((r) => r.poolId === pool.id).map((r) => ({
-      identifier: r.issueIdentifier, agentName: r.agentName, model: r.model, status: r.status, occupiesSlot: occupiesSlot(r), waitingOnAgent: r.waitingOnAgent, stalled: r.stalled,
+      runId: r.runId, identifier: r.issueIdentifier, title: r.issueTitle, description: r.issueDescription, agentName: r.agentName, model: r.model, status: r.status,
+      startedAt: r.startedAt, queuedAt: r.queuedAt, occupiesSlot: occupiesSlot(r), waitingOnAgent: r.waitingOnAgent, stalled: r.stalled,
     }));
     if (pool.kind === "engine") {
       const engines = (pool.engines ?? []).map((e) => {
@@ -255,18 +256,43 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
       return { found: true, pool: summary, kind: "engine", engines, runs };
     }
     // Each model's price, limits and the meters shown come from its own backend.
-    const targets: PlacementTarget[] = pool.placement ?? pool.patterns.map((model) => ({ model }));
-    const models = targets.map((t) => {
+    // The pool's own name (pool/<id>) isn't a model of its own: a pool that keeps that name on tasks runs it as its
+    // first real model, so its runs are counted there instead of on a row with no price.
+    const virtual = virtualModel(pool.localId ?? pool.id);
+    const realModels = pool.patterns.filter((m) => m !== virtual);
+    const targets: PlacementTarget[] = pool.placement ?? (realModels.length ? realModels : pool.patterns).map((model) => ({ model }));
+    const models = targets.map((t, i) => {
       const backend = backends.find((b) => b.id === (t.backendId ?? pool.backend));
       const row = rows.find((r) => r.id === backend?.id);
       const id = stripPrefix(backend ? backendPrefix(backend) : "", t.model);
+      const names = !pool.placement && i === 0 && t.model !== virtual ? [t.model, virtual] : [t.model];
       return {
-        model: t.model, backendName: backend?.name, price: backend?.type === "copilot" ? { included: true } : row?.usage?.prices?.[id], runsNow: running([t.model]), runsToday: today[t.model] ?? 0,
+        model: t.model, backendName: backend?.name, price: backend?.type === "copilot" ? { included: true } : row?.usage?.prices?.[id],
+        runsNow: running(names), runsToday: names.reduce((n, m) => n + (today[m] ?? 0), 0),
         limits: row?.usage?.modelLimits?.[id] ?? (id.endsWith(":free") ? row?.usage?.modelLimits?.["*:free"] : undefined), paused: paused(t.model),
       };
     });
     const ids = [...new Set(targets.map((t) => t.backendId ?? pool.backend).filter((x): x is string => Boolean(x)))];
-    return { found: true, pool: summary, kind: pool.kind ?? "quota", dailyRunCap: pool.dailyRunCap, backends: rows.filter((r) => ids.includes(r.id)), models, runs };
+    // A proxy's card shows only its own meters and the upstream providers this pool's models call, counted over this
+    // pool's models alone (a Gemini Pro pool's requests, not every Gemini model behind the proxy).
+    const usageById = Object.fromEntries(rows.flatMap((r) => (r.usage ? [[r.id, r.usage]] : [])));
+    const relevant = (row: (typeof rows)[number]) => {
+      const backend = backends.find((b) => b.id === row.id);
+      const upstreams = row.usage?.upstreams;
+      if (!row.usage || !upstreams || !backend) return row;
+      const prefix = backendPrefix(backend);
+      const mine = Object.fromEntries(targets.filter((t) => (t.backendId ?? pool.backend) === row.id)
+        .map((t) => stripPrefix(prefix, t.model)).filter((id) => upstreams[id]).map((id) => [id, upstreams[id]]));
+      if (!Object.keys(mine).length) return row;
+      const known = new Set(Object.values(PROVIDER_NAMES));
+      const own = row.usage.meters.filter((m) => {
+        const name = m.label.includes(": ") ? m.label.slice(0, m.label.indexOf(": ")) : undefined;
+        return !name || !known.has(name);
+      });
+      const providers = providerQuotas(mine, backends, usageById, row.usage.upstreamRequests, now(), row.usage.upstreamLimits, row.usage.upstreamPrepaid);
+      return { ...row, usage: { ...row.usage, meters: [...own, ...providers] } };
+    };
+    return { found: true, pool: summary, kind: pool.kind ?? "quota", dailyRunCap: pool.dailyRunCap, backends: rows.filter((r) => ids.includes(r.id)).map(relevant), models, runs };
   });
 
   ctx.data.register("queue", async (params) => {

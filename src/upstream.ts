@@ -26,6 +26,7 @@ export const upstreamQuota = (
   requests: Readonly<Record<string, number>> = {},
   now: Date = new Date(),
   limits: UpstreamLimits = {},
+  prepaid: Readonly<Record<string, { used: number; credit: number }>> = {},
 ): UpstreamQuota => {
   const found = new Map<string, { name: string; meter: UsageMeter }>();
   const uncovered: string[] = [];
@@ -40,7 +41,11 @@ export const upstreamQuota = (
     const kind = model.endsWith(":free") ? "free" : "paid";
     const reported = backend ? usage[backend.id]?.meters.find((m) => m.limit !== undefined && (!m.appliesTo || m.appliesTo === kind)) : undefined;
     let part: { key: string; name: string; meter: UsageMeter } | undefined;
-    if (backend && reported) {
+    const credit = prepaid[provider];
+    if (credit) {
+      // Prepaid credit with the provider: every model it serves draws on one balance.
+      part = { key: `prepaid|${provider}`, name: PROVIDER_NAMES[provider] ?? provider, meter: prepaidMeter(credit) };
+    } else if (backend && reported) {
       // Deployments on one upstream quota (OpenRouter's free requests per account) share it, so it counts once.
       part = { key: `${backend.id}|${reported.label}`, name: backend.name, meter: reported };
     } else {
@@ -76,7 +81,11 @@ export const upstreamQuota = (
   return { meter, uncovered, exhausted };
 };
 
-const PROVIDER_NAMES: Record<string, string> = { openrouter: "OpenRouter", gemini: "Gemini", groq: "Groq", nvidia_nim: "NVIDIA NIM", cloudflare: "Cloudflare" };
+const prepaidMeter = (c: { used: number; credit: number }): UsageMeter => ({
+  label: "Prepaid credit", unit: "usd", used: c.used, limit: c.credit, remaining: Math.max(0, c.credit - c.used), period: "prepaid, no reset",
+});
+
+export const PROVIDER_NAMES: Record<string, string> = { openrouter: "OpenRouter", gemini: "Gemini", groq: "Groq", nvidia_nim: "NVIDIA NIM", cloudflare: "Cloudflare" };
 
 // One meter per upstream provider a proxy calls, across all its deployments: the provider's own reported quota
 // (OpenRouter), or its models' requests counted today against their published daily limits added up. A provider with
@@ -88,13 +97,20 @@ export const providerQuotas = (
   requests: Readonly<Record<string, number>> = {},
   now: Date = new Date(),
   limits: UpstreamLimits = {},
+  prepaid: Readonly<Record<string, { used: number; credit: number }>> = {},
 ): UsageMeter[] => {
   const models = [...new Set(Object.values(upstreams).flat())];
-  const providers = [...new Set(models.map((m) => m.split("/")[0]))].filter((p) => PROVIDER_TYPES[p] || models.some((m) => m.startsWith(`${p}/`) && limits[m]));
+  const providers = [...new Set(models.map((m) => m.split("/")[0]))].filter((p) => PROVIDER_TYPES[p] || prepaid[p] || models.some((m) => m.startsWith(`${p}/`) && limits[m]));
   const out: UsageMeter[] = [];
   for (const provider of providers) {
     const own = models.filter((m) => m.startsWith(`${provider}/`));
     const name = PROVIDER_NAMES[provider] ?? provider;
+    // Prepaid credit is the provider's real limit: show it instead of any per-day request count (a free model's
+    // allowance on the same provider, like Gemma's, isn't this credit's limit).
+    if (prepaid[provider]) {
+      out.push({ ...prepaidMeter(prepaid[provider]), label: `${name}: prepaid credit` });
+      continue;
+    }
     const backend = backends.find((b) => b.type === PROVIDER_TYPES[provider]);
     if (backend) {
       // The provider reports its own quota: one meter per quota its models draw on (free requests, credits).
