@@ -26,7 +26,7 @@ export const upstreamQuota = (
   requests: Readonly<Record<string, number>> = {},
   now: Date = new Date(),
   limits: UpstreamLimits = {},
-  prepaid: Readonly<Record<string, { used: number; credit: number }>> = {},
+  prepaid: Readonly<Record<string, PrepaidCredit>> = {},
 ): UpstreamQuota => {
   const found = new Map<string, { name: string; meter: UsageMeter }>();
   const uncovered: string[] = [];
@@ -81,8 +81,10 @@ export const upstreamQuota = (
   return { meter, uncovered, exhausted };
 };
 
-const prepaidMeter = (c: { used: number; credit: number }): UsageMeter => ({
+type PrepaidCredit = { used: number; credit: number; billedThrough?: string };
+const prepaidMeter = (c: PrepaidCredit): UsageMeter => ({
   label: "Prepaid credit", unit: "usd", used: c.used, limit: c.credit, remaining: Math.max(0, c.credit - c.used), period: "prepaid, no reset",
+  ...(c.billedThrough ? { detail: `Billed through ${c.billedThrough.slice(0, 10)}, LiteLLM's estimate since` } : {}),
 });
 
 export const PROVIDER_NAMES: Record<string, string> = { openrouter: "OpenRouter", gemini: "Gemini", groq: "Groq", nvidia_nim: "NVIDIA NIM", cloudflare: "Cloudflare" };
@@ -97,7 +99,7 @@ export const providerQuotas = (
   requests: Readonly<Record<string, number>> = {},
   now: Date = new Date(),
   limits: UpstreamLimits = {},
-  prepaid: Readonly<Record<string, { used: number; credit: number }>> = {},
+  prepaid: Readonly<Record<string, PrepaidCredit>> = {},
 ): UsageMeter[] => {
   const models = [...new Set(Object.values(upstreams).flat())];
   const providers = [...new Set(models.map((m) => m.split("/")[0]))].filter((p) => PROVIDER_TYPES[p] || prepaid[p] || models.some((m) => m.startsWith(`${p}/`) && limits[m]));

@@ -3,6 +3,7 @@ import { backendBaseUrl, probeBaseUrl, type Backend } from "./backends.js";
 import { getJson, type EngineStages, type FetchFn } from "./probes/http.js";
 import { PROBES } from "./probes/index.js";
 import { catalogPrices, liteLlmPrices, openRouterPrices, type ModelPrice } from "./prices.js";
+import type { BilledCost } from "./billing.js";
 import { dayStart, readUpstreamLimit, type UpstreamLimit } from "./upstreamLimits.js";
 
 // One number a backend reports about its own use: money spent against a budget, or local slots busy.
@@ -47,11 +48,14 @@ export interface BackendUsage {
   // LiteLLM: each upstream model's quota, from its deployments' model_info.
   upstreamLimits?: Record<string, UpstreamLimit>;
   // Prepaid credit per upstream provider (LiteLLM's provider name): spent since it was loaded, against the credit.
-  upstreamPrepaid?: Record<string, { used: number; credit: number; since: string }>;
+  upstreamPrepaid?: Record<string, PrepaidUse>;
   // Requests each upstream model (the provider's own model, across every alias that calls it) has had since its
   // provider's daily reset, counted in LiteLLM's logs (needs the backend's admin logs key).
   upstreamRequests?: Record<string, number>;
 }
+
+// billedThrough: the provider's billing counts up to here; LiteLLM's estimate covers the rest.
+export interface PrepaidUse { used: number; credit: number; since: string; billedThrough?: string; error?: string }
 
 export interface ModelLimits {
   rpm?: number;
@@ -67,7 +71,8 @@ export interface UsageDeps {
   // LiteLLM: an admin key's headers for reading its logs (upstream request counts).
   logsHeaders?: Record<string, string>;
   // LiteLLM: prepaid credit per upstream provider, read against LiteLLM's spend on it (needs logsHeaders).
-  prepaid?: { provider: string; credit: number; since: string }[];
+  // `billed` is the provider's own billed cost up to a cut-off (see billing.ts), when its billing export is set up.
+  prepaid?: { provider: string; credit: number; since: string; billed?: BilledCost }[];
   // A backend with no usage API: what Paperclip's own runs through it cost and used, from its cost records.
   paperclipSpend?: () => Promise<PaperclipSpend | undefined>;
   now?: () => Date;
@@ -339,18 +344,20 @@ export const sampleUsage = async (backend: Backend, deps: UsageDeps): Promise<Ba
 export const usedShare = (m: UsageMeter) =>
   m.limit && m.limit > 0 ? Math.min(1, (m.used ?? (m.remaining !== undefined ? m.limit - m.remaining : 0)) / m.limit) : undefined;
 
-// LiteLLM's spend per upstream provider since each prepaid credit was loaded (/global/spend/provider, admin key).
-// Its dates are whole days, so a credit loaded mid-day also counts that day's earlier spend (a conservative reading).
+// What each prepaid credit has used: the provider's billed cost up to its export's cut-off when there is one, plus
+// LiteLLM's spend on that provider from then on (/global/spend/provider, admin key). LiteLLM's dates are whole days,
+// so a credit loaded mid-day also counts that day's earlier spend (a conservative reading); its price is the list
+// price, so it also reads high when the provider discounts.
 export const prepaidSpend = async (base: string, prepaid: NonNullable<UsageDeps["prepaid"]>, deps: UsageDeps) => {
   const pc = { baseUrl: base, fetch: deps.fetch, headers: deps.logsHeaders, timeoutMs: deps.timeoutMs };
   const tomorrow = new Date((deps.now?.() ?? new Date()).getTime() + 86_400_000).toISOString().slice(0, 10);
-  const out: Record<string, { used: number; credit: number; since: string }> = {};
+  const out: Record<string, PrepaidUse> = {};
   for (const p of prepaid) {
-    const since = p.since.slice(0, 10);
-    const rows = await getJson<{ provider?: unknown; spend?: unknown }[]>(pc, `/global/spend/provider?start_date=${since}&end_date=${tomorrow}`).catch(() => undefined);
+    const from = (p.billed && p.billed.through > p.since ? p.billed.through : p.since).slice(0, 10);
+    const rows = await getJson<{ provider?: unknown; spend?: unknown }[]>(pc, `/global/spend/provider?start_date=${from}&end_date=${tomorrow}`).catch(() => undefined);
     if (!Array.isArray(rows)) continue;
-    const used = rows.filter((r) => r.provider === p.provider).reduce((n, r) => n + (num(r.spend) ?? 0), 0);
-    out[p.provider] = { used, credit: p.credit, since: p.since };
+    const estimated = rows.filter((r) => r.provider === p.provider).reduce((n, r) => n + (num(r.spend) ?? 0), 0);
+    out[p.provider] = { used: (p.billed?.amount ?? 0) + estimated, credit: p.credit, since: p.since, ...(p.billed ? { billedThrough: p.billed.through } : {}) };
   }
   return out;
 };

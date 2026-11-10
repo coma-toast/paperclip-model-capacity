@@ -221,6 +221,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
         ...(keyBinding ? { key: keyBinding } : {}),
+        // Fields this form doesn't edit (set in the host's config form) stay as they were.
+        ...(previous?.logsKey ? { logsKey: previous.logsKey } : {}),
+        ...(previous?.prepaid ? { prepaid: previous.prepaid } : {}),
       };
       const backends = previous ? current.map((b) => (b.id === id ? backend : b)) : [...current, backend];
       await savePluginConfig(companyId, { ...config, backends });

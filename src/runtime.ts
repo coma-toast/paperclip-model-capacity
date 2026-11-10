@@ -5,6 +5,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DEFAULT_PROBE_INTERVAL_MS, DEFAULT_USAGE_INTERVAL_MS, HISTORY_RETENTION_DAYS, RUN_EVENT_DEBOUNCE_MS } from "./constants.js";
 import { LEVEL_KINDS, createAlerter } from "./alerts.js";
 import { apiInfo } from "./apis.js";
+import { readBilledCost, type BilledCost } from "./billing.js";
 import { backendPrefix, createBackendAuth, readBackends, type Backend } from "./backends.js";
 import { convertPools } from "./convert.js";
 import { drainingRuns, drainStep, type DrainingRun } from "./drain.js";
@@ -19,7 +20,9 @@ import { createStore } from "./state/store.js";
 import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { opencodeCopilotToken } from "./opencodeAuth.js";
 import { quotaTokenFor, readSubscriptionWindows } from "./subscriptions.js";
-import { PAPERCLIP_SPEND_SQL, sampleUsage, type BackendUsage, type PaperclipSpend } from "./usage.js";
+import { PAPERCLIP_SPEND_SQL, sampleUsage, type BackendUsage, type PaperclipSpend, type UsageDeps } from "./usage.js";
+
+const BILLED_CACHE_MS = 30 * 60_000;
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -255,6 +258,29 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     return row ? { monthUsd: Number(row.month_usd ?? 0), freeRuns: Number(row.free_runs ?? 0), freeTokens: Number(row.free_tokens ?? 0) } : undefined;
   };
 
+  // Prepaid credits with a billing export: the provider's billed cost, read at most every BILLED_CACHE_MS (the export
+  // itself updates a few times a day). A failed read keeps the last good one.
+  const billedCache = new Map<string, { at: number; value?: BilledCost }>();
+  const withBilled = async (companyId: string, b: Backend): Promise<NonNullable<UsageDeps["prepaid"]>> => {
+    const index = readBackends(await ctx.config.get(companyId)).findIndex((x) => x.id === b.id);
+    return Promise.all((b.prepaid ?? []).map(async (p, j) => {
+      if (!p.billing?.key) return p;
+      const cacheKey = `${companyId}|${b.id}|${j}|${JSON.stringify(p)}`;
+      const hit = billedCache.get(cacheKey);
+      if (hit && now().getTime() - hit.at < BILLED_CACHE_MS) return hit.value ? { ...p, billed: hit.value } : p;
+      try {
+        const keyJson = await ctx.secrets.resolve(p.billing.key as Parameters<PluginContext["secrets"]["resolve"]>[0], { companyId, configPath: `backends.${index}.prepaid.${j}.billing.key` });
+        const value = await readBilledCost((url, init) => ctx.http.fetch(url, init), keyJson, p.billing!, p.since, now());
+        billedCache.set(cacheKey, { at: now().getTime(), value });
+        return value ? { ...p, billed: value } : p;
+      } catch (e) {
+        ctx.logger.warn("Model capacity couldn't read the billing export", { companyId, backendId: b.id, provider: p.provider, error: errText(e) });
+        billedCache.set(cacheKey, { at: now().getTime(), value: hit?.value });
+        return hit?.value ? { ...p, billed: hit.value } : p;
+      }
+    }));
+  };
+
   const sampleCompany = async (companyId: string) => {
     const samples = await Promise.all((await backendsFor(companyId)).map(async (b): Promise<BackendUsage> => {
       let headers: Record<string, string> | undefined;
@@ -265,7 +291,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
       }
       const logsHeaders = b.type === "litellm" ? await backendAuth.logsHeadersFor(companyId, b.id).catch(() => undefined) : undefined;
       const paperclipSpend = b.type === "opencode" ? () => readPaperclipSpend(companyId, b) : undefined;
-      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, ...(b.prepaid?.length ? { prepaid: b.prepaid } : {}), paperclipSpend, now });
+      return sampleUsage(b, { fetch: (url, init) => ctx.http.fetch(url, init), headers, logsHeaders, ...(b.prepaid?.length ? { prepaid: await withBilled(companyId, b) } : {}), paperclipSpend, now });
     }));
     await store.companyUsage(companyId).set(Object.fromEntries((await withSpentToday(companyId, samples)).map((s) => [s.backendId, s])));
     await refreshEngineAliases(companyId);
