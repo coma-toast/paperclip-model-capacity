@@ -197,6 +197,8 @@ export interface OpenTask {
   priority: TaskPriority;
   status: string;
   hasActiveRun: boolean;
+  // It has run and nothing new (comment, closed child) arrived since, so it doesn't want a run: never held or woken.
+  idle?: boolean;
   exempt: boolean;
   pinned: boolean;
   // The model a run would use now (the task's override, else its agent's model), and the parent task.
@@ -305,7 +307,8 @@ export type PlaceReason = "new" | "parent" | "engineDown" | "fallback";
 
 export type Action =
   | { kind: "hold"; issueId: string; companyId: string; poolId: string; position: number }
-  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual"; model?: string }
+  // reason "idle": the task doesn't want a run any more, so it's let go without a wake-up.
+  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual" | "idle"; model?: string }
   | { kind: "place"; issueId: string; companyId: string; poolId: string; model: string; reason: PlaceReason }
   | { kind: "switchAdapter"; agentId: string; companyId: string; poolId: string; fromAdapterType: string; toAdapterType: string; model: string; reason: string }
   | { kind: "overflow"; issueId: string; companyId: string; fromPoolId: string; toPoolId: string; model: string; reason: OverflowReason }

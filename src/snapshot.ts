@@ -54,6 +54,28 @@ export const dbFailureReader = (ctx: PluginContext): FailureReader => async () =
     return undefined;
   }
 };
+// Open tasks that have run and had nothing new since: no comment from anyone but their assignee (the plugin's own
+// notes are "system") and no child closed after their last run ended. Waking one only starts a run with nothing to do,
+// so the plugin neither holds nor wakes it; Paperclip wakes it itself when something new arrives.
+export const IDLE_SQL =
+  "SELECT i.id::text AS issue_id FROM public.issues i " +
+  "CROSS JOIN LATERAL (SELECT MAX(r.finished_at) AS ended FROM public.heartbeat_runs r WHERE r.company_id = i.company_id AND r.issue_id = i.id) lr " +
+  "WHERE i.id = ANY($1::uuid[]) AND lr.ended IS NOT NULL " +
+  "AND NOT EXISTS (SELECT 1 FROM public.issue_comments c WHERE c.company_id = i.company_id AND c.issue_id = i.id AND c.deleted_at IS NULL " +
+  "AND c.author_type IN ('user', 'agent') AND c.author_agent_id IS DISTINCT FROM i.assignee_agent_id AND c.created_at > lr.ended) " +
+  "AND NOT EXISTS (SELECT 1 FROM public.issues ch WHERE ch.parent_id = i.id AND ch.status IN ('done', 'cancelled') AND ch.completed_at > lr.ended)";
+// Returns undefined when the core tables can't be read; then no task counts as idle (the old behaviour).
+export type IdleReader = (issueIds: string[]) => Promise<string[] | undefined>;
+export const dbIdleReader = (ctx: PluginContext): IdleReader => async (issueIds) => {
+  if (!issueIds.length) return [];
+  try {
+    return (await ctx.db.query<{ issue_id: string }>(IDLE_SQL, [issueIds])).map((r) => r.issue_id);
+  } catch (e) {
+    ctx.logger.warn("Idle-task read failed; treating every open task as wanting a run", { error: e instanceof Error ? e.message : String(e) });
+    return undefined;
+  }
+};
+
 const RATE_LIMITED = /\b429\b|rate.?limit|too many requests|quota|usage.?limit|limit reached|insufficient.?(credit|balance|funds)|out of credits|FreeUsageLimit/i;
 export const RATE_LIMIT_FAILURES = 2;
 const DAILY_LIMIT = /per.?day|daily|requests? a day|free-models-per-day|RPD\b/i;
@@ -225,6 +247,7 @@ export interface SnapshotDeps {
   agents: AgentCache;
   readRuns: RunReader;
   readFailures?: FailureReader;
+  readIdle?: IdleReader;
   listCompanies?: () => Promise<Company[]>;
   backendsFor?: BackendsFor;
   blockers?: BlockerCache;
@@ -347,7 +370,7 @@ const exhaustedModels = async (input: {
   return next;
 };
 
-export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures = dbFailureReader(ctx), listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
+export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures = dbFailureReader(ctx), readIdle = dbIdleReader(ctx), listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [hosts, holds, released, overrides, exemptions] = await Promise.all([
     store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
   ]);
@@ -441,6 +464,11 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
       ...(issue.createdAt ? { createdAt: new Date(issue.createdAt).toISOString() } : {}),
     });
   }
+
+  // A task that was "todo" when it was held still waits for its first run; anything else open with no run is checked.
+  const candidates = tasks.filter((t) => !t.hasActiveRun && t.status !== "todo" && (holds[t.issueId]?.statusBefore ?? t.status) !== "todo");
+  const idle = new Set((await readIdle(candidates.map((t) => t.issueId))) ?? []);
+  for (const t of candidates) if (idle.has(t.issueId)) t.idle = true;
 
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),

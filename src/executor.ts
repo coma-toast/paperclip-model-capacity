@@ -112,6 +112,8 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     // Paperclip leaves a task "blocked" when its last blocker is removed, and then drops the wake-up, so the slot sat
     // empty while the task was held again in a loop. With no other open blocker left, put its status back first.
     const stillBlocked = await unblock(a.issueId, a.companyId, held?.statusBefore);
+    // A task let go because it doesn't want a run isn't woken: Paperclip wakes it when something new arrives.
+    if (a.reason === "idle") return;
     // Removing a blocker doesn't wake the task, so wake it; store the run so it counts until it starts (B2). A task
     // that can't run (another blocker) reserves nothing, so the slot goes to the next task.
     const runId = await wake(a.issueId, a.companyId);

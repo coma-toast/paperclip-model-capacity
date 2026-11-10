@@ -284,7 +284,12 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     const isExempt = (t: OpenTask) => t.exempt || exemptAgents.has(t.agentId);
     // A parked task needs a person, not a slot: it neither waits in the queue nor is held again.
     const parkedTasks = tasks.filter((t) => snapshot.parked?.[t.issueId] && OPEN.has(t.status) && !t.hasActiveRun);
-    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !snapshot.parked?.[t.issueId]);
+    // An idle task (it ran and nothing new arrived) doesn't want a run: it neither waits nor takes a slot, and a hold it
+    // still has is dropped without a wake-up.
+    for (const t of tasks) {
+      if (t.idle && !t.hasActiveRun && holdsByIssue.has(t.issueId)) actions.push({ kind: "release", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, reason: "idle" });
+    }
+    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !t.idle && !snapshot.parked?.[t.issueId]);
     const held: HeldTask[] = snapshot.holds.filter((h) => groupKey(pool, h.companyId) === key && h.poolId === pool.id);
 
     // B5: an exempt task never waits, so drop any hold it still has.
