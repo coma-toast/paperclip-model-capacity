@@ -66,6 +66,8 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     if (next.length !== current.length) await ctx.issues.update(issueId, { labelIds: next }, companyId);
   };
 
+  // Forgotten after this, so a task back in a pool weeks later gets the note again.
+  const HOLD_NOTE_RETENTION_MS = 30 * 86_400_000;
   const hold = async (a: Extract<Action, { kind: "hold" }>, pool: PoolConfig, snapshot: Snapshot, opts: { heldAt?: string; comment?: string } = {}) => {
     const holds = await store.holds.get();
     if (holds[a.issueId]) {
@@ -75,8 +77,19 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     const blockerId = await ensureBlocker(a.companyId, pool);
     await ctx.issues.relations.addBlockers(a.issueId, [blockerId], a.companyId);
     await setLabel(a.issueId, a.companyId, true);
-    // One comment per hold, never one per position change (C1).
-    await ctx.issues.createComment(a.issueId, opts.comment ?? `Waiting for ${pool.name} (position ${a.position}). Model capacity plugin.`, a.companyId);
+    // The queue note goes on a task once per pool, not on every hold or position change (C1). A message a person's
+    // action asked for (a move) always posts.
+    if (opts.comment) {
+      await ctx.issues.createComment(a.issueId, opts.comment, a.companyId);
+    } else {
+      const cutoff = now().getTime() - HOLD_NOTE_RETENTION_MS;
+      const notes = Object.fromEntries(Object.entries(await store.holdNotes.get()).filter(([, at]) => Date.parse(at) > cutoff));
+      const key = `${a.issueId}|${a.poolId}`;
+      if (!notes[key]) {
+        await ctx.issues.createComment(a.issueId, `Waiting for ${pool.name} (position ${a.position}). Model capacity plugin.`, a.companyId);
+        await store.holdNotes.set({ ...notes, [key]: now().toISOString() });
+      }
+    }
     const task = snapshot.tasks.find((t) => t.issueId === a.issueId);
     const held: HeldTask = {
       issueId: a.issueId, companyId: a.companyId, poolId: a.poolId, priority: task?.priority ?? "medium", heldAt: opts.heldAt ?? now().toISOString(), position: a.position, blockerId,
