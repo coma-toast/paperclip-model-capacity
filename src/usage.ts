@@ -3,6 +3,7 @@ import { backendBaseUrl, probeBaseUrl, type Backend } from "./backends.js";
 import { getJson, type EngineStages, type FetchFn } from "./probes/http.js";
 import { PROBES } from "./probes/index.js";
 import { catalogPrices, liteLlmPrices, openRouterPrices, type ModelPrice } from "./prices.js";
+import type { BilledCost } from "./billing.js";
 import { dayStart, readUpstreamLimit, type UpstreamLimit } from "./upstreamLimits.js";
 
 // One number a backend reports about its own use: money spent against a budget, or local slots busy.
@@ -46,10 +47,15 @@ export interface BackendUsage {
   upstreams?: Record<string, string[]>;
   // LiteLLM: each upstream model's quota, from its deployments' model_info.
   upstreamLimits?: Record<string, UpstreamLimit>;
+  // Prepaid credit per upstream provider (LiteLLM's provider name): spent since it was loaded, against the credit.
+  upstreamPrepaid?: Record<string, PrepaidUse>;
   // Requests each upstream model (the provider's own model, across every alias that calls it) has had since its
   // provider's daily reset, counted in LiteLLM's logs (needs the backend's admin logs key).
   upstreamRequests?: Record<string, number>;
 }
+
+// billedThrough: the provider's billing counts up to here; LiteLLM's estimate covers the rest.
+export interface PrepaidUse { used: number; credit: number; since: string; billedThrough?: string; error?: string }
 
 export interface ModelLimits {
   rpm?: number;
@@ -64,6 +70,9 @@ export interface UsageDeps {
   headers?: Record<string, string>;
   // LiteLLM: an admin key's headers for reading its logs (upstream request counts).
   logsHeaders?: Record<string, string>;
+  // LiteLLM: prepaid credit per upstream provider, read against LiteLLM's spend on it (needs logsHeaders).
+  // `billed` is the provider's own billed cost up to a cut-off (see billing.ts), when its billing export is set up.
+  prepaid?: { provider: string; credit: number; since: string; billed?: BilledCost }[];
   // A backend with no usage API: what Paperclip's own runs through it cost and used, from its cost records.
   paperclipSpend?: () => Promise<PaperclipSpend | undefined>;
   now?: () => Date;
@@ -91,7 +100,7 @@ const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 const meter = (m: UsageMeter): UsageMeter =>
   m.remaining === undefined && m.limit !== undefined && m.used !== undefined ? { ...m, remaining: Math.max(0, m.limit - m.used) } : m;
 
-type Sample = Pick<BackendUsage, "meters" | "notes" | "source" | "prices" | "modelLimits" | "stages" | "upstreams" | "upstreamLimits" | "upstreamRequests">;
+type Sample = Pick<BackendUsage, "meters" | "notes" | "source" | "prices" | "modelLimits" | "stages" | "upstreams" | "upstreamLimits" | "upstreamRequests" | "upstreamPrepaid">;
 
 // LiteLLM: the key's own spend and budget (/key/info), plus its team's when the key belongs to one.
 const liteLlm = async (base: string, deps: UsageDeps): Promise<Sample> => {
@@ -140,9 +149,11 @@ const liteLlm = async (base: string, deps: UsageDeps): Promise<Sample> => {
     modelLimits[d.model_name] = { deployments: (l.deployments ?? 0) + 1, ...(rpm !== undefined || l.rpm !== undefined ? { rpm: (l.rpm ?? 0) + (rpm ?? 0) } : {}), ...(tpm !== undefined || l.tpm !== undefined ? { tpm: (l.tpm ?? 0) + (tpm ?? 0) } : {}) };
   }
   const upstreamRequests = deps.logsHeaders && deployments ? await countUpstreamRequests(base, deployments.data ?? [], upstreamLimits, deps) : undefined;
+  const upstreamPrepaid = deps.logsHeaders && deps.prepaid?.length ? await prepaidSpend(base, deps.prepaid, deps) : undefined;
   return {
     meters, notes, source: `${base}/key/info`, ...(deployments ? { prices: liteLlmPrices(deployments.data ?? []), modelLimits, upstreams, upstreamLimits } : {}),
     ...(upstreamRequests ? { upstreamRequests } : {}),
+    ...(upstreamPrepaid && Object.keys(upstreamPrepaid).length ? { upstreamPrepaid } : {}),
   };
 };
 
@@ -332,3 +343,21 @@ export const sampleUsage = async (backend: Backend, deps: UsageDeps): Promise<Ba
 // The share of a meter that's used, 0-1, when it has a limit.
 export const usedShare = (m: UsageMeter) =>
   m.limit && m.limit > 0 ? Math.min(1, (m.used ?? (m.remaining !== undefined ? m.limit - m.remaining : 0)) / m.limit) : undefined;
+
+// What each prepaid credit has used: the provider's billed cost up to its export's cut-off when there is one, plus
+// LiteLLM's spend on that provider from then on (/global/spend/provider, admin key). LiteLLM's dates are whole days,
+// so a credit loaded mid-day also counts that day's earlier spend (a conservative reading); its price is the list
+// price, so it also reads high when the provider discounts.
+export const prepaidSpend = async (base: string, prepaid: NonNullable<UsageDeps["prepaid"]>, deps: UsageDeps) => {
+  const pc = { baseUrl: base, fetch: deps.fetch, headers: deps.logsHeaders, timeoutMs: deps.timeoutMs };
+  const tomorrow = new Date((deps.now?.() ?? new Date()).getTime() + 86_400_000).toISOString().slice(0, 10);
+  const out: Record<string, PrepaidUse> = {};
+  for (const p of prepaid) {
+    const from = (p.billed && p.billed.through > p.since ? p.billed.through : p.since).slice(0, 10);
+    const rows = await getJson<{ provider?: unknown; spend?: unknown }[]>(pc, `/global/spend/provider?start_date=${from}&end_date=${tomorrow}`).catch(() => undefined);
+    if (!Array.isArray(rows)) continue;
+    const estimated = rows.filter((r) => r.provider === p.provider).reduce((n, r) => n + (num(r.spend) ?? 0), 0);
+    out[p.provider] = { used: (p.billed?.amount ?? 0) + estimated, credit: p.credit, since: p.since, ...(p.billed ? { billedThrough: p.billed.through } : {}) };
+  }
+  return out;
+};

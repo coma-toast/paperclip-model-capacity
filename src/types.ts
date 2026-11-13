@@ -73,12 +73,19 @@ export interface PoolConfig {
   // (overage billed, e.g. Copilot premium requests past the allowance, or ChatGPT credits past the weekly limit).
   // Rate-limit and usage-limit errors from runs still pause a model.
   allowOverQuota?: boolean;
+  // Subscription pools: these models keep running on the provider's extra usage once its windows are used up (until
+  // the extra-usage pool is), while the pool's other models pause. E.g. Opus continues past the weekly limit, Fable waits.
+  overQuotaModels?: string[];
   // Quota pools for a subscription (Claude, ChatGPT/Codex): pause the pool's models while every account of it is at 100%.
   // "both": each model by its own provider (Haiku with Claude, Terra with ChatGPT), for a pool spanning both.
   subscription?: "anthropic" | "openai" | "both";
   // Quota pools across both subscriptions: an idle agent on the pool's virtual model with a task waiting is switched
   // between Claude Code and Codex, to the subscription that has quota left (or clearly more of it).
   switchAdapters?: boolean;
+  // Never pin tasks to one of the pool's models: tasks keep the pool name (pool/<id>) and the pool only counts, holds
+  // and releases them. For agents whose runtime resolves the pool name itself (OpenCode through LiteLLM, which has a
+  // model named after the pool). Claude Code and Codex can't run a pool name, so their pools must keep pinning.
+  keepPoolName?: boolean;
   // The model agents point at to use this pool instead of a specific model (one of the pool's models; for a sticky
   // pool, an entry model, so the pool picks the engine). It must work on its own too, for runs that have no task.
   agentModel?: string;
@@ -193,6 +200,8 @@ export interface OpenTask {
   priority: TaskPriority;
   status: string;
   hasActiveRun: boolean;
+  // It has run and nothing new (comment, closed child) arrived since, so it doesn't want a run: never held or woken.
+  idle?: boolean;
   exempt: boolean;
   pinned: boolean;
   // The model a run would use now (the task's override, else its agent's model), and the parent task.
@@ -301,7 +310,8 @@ export type PlaceReason = "new" | "parent" | "engineDown" | "fallback";
 
 export type Action =
   | { kind: "hold"; issueId: string; companyId: string; poolId: string; position: number }
-  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual"; model?: string }
+  // reason "idle": the task doesn't want a run any more, so it's let go without a wake-up.
+  | { kind: "release"; issueId: string; companyId: string; poolId: string; reason: "capacity" | "manual" | "idle"; model?: string }
   | { kind: "place"; issueId: string; companyId: string; poolId: string; model: string; reason: PlaceReason }
   | { kind: "switchAdapter"; agentId: string; companyId: string; poolId: string; fromAdapterType: string; toAdapterType: string; model: string; reason: string }
   | { kind: "overflow"; issueId: string; companyId: string; fromPoolId: string; toPoolId: string; model: string; reason: OverflowReason }

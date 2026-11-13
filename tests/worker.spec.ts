@@ -185,7 +185,7 @@ describe("probe tick", () => {
 describe("manifest and plugin hooks", () => {
   it("declares the jobs, capabilities and database read the worker uses", () => {
     expect(manifest.jobs?.map((j) => [j.jobKey, j.schedule])).toEqual([["sweep", "* * * * *"], ["prune", "0 4 * * *"]]);
-    expect(manifest.database).toEqual({ migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events"] });
+    expect(manifest.database).toEqual({ migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events", "issues", "issue_comments"] });
     for (const cap of ["jobs.schedule", "issues.wakeup", "issue.relations.write", "database.namespace.read", "http.outbound"] as const) {
       expect(manifest.capabilities).toContain(cap);
     }

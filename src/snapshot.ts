@@ -54,6 +54,30 @@ export const dbFailureReader = (ctx: PluginContext): FailureReader => async () =
     return undefined;
   }
 };
+// Open tasks that have run and had nothing new since: no comment from anyone but their assignee (the plugin's own
+// notes are "system") and no child closed after their last run ended. Waking one only starts a run with nothing to do,
+// so the plugin neither holds nor wakes it; Paperclip wakes it itself when something new arrives.
+export const IDLE_SQL =
+  "SELECT i.id::text AS issue_id FROM public.issues i " +
+  "CROSS JOIN LATERAL (SELECT MAX(r.finished_at) AS ended FROM public.heartbeat_runs r WHERE r.company_id = i.company_id AND r.issue_id = i.id) lr " +
+  "WHERE i.id = ANY(string_to_array($1, ',')::uuid[]) AND lr.ended IS NOT NULL " +
+  "AND NOT EXISTS (SELECT 1 FROM public.issue_comments c WHERE c.company_id = i.company_id AND c.issue_id = i.id AND c.deleted_at IS NULL " +
+  // No "IS DISTINCT FROM": the host's SQL check reads "FROM i.x" as a table in schema "i".
+  "AND c.author_type IN ('user', 'agent') AND (c.author_agent_id IS NULL OR c.author_agent_id <> i.assignee_agent_id) AND c.created_at > lr.ended) " +
+  "AND NOT EXISTS (SELECT 1 FROM public.issues ch WHERE ch.parent_id = i.id AND ch.status IN ('done', 'cancelled') AND ch.completed_at > lr.ended)";
+// The ids go in as one comma-separated text parameter: the host binds a JS array as a list, not a Postgres array.
+// Returns undefined when the core tables can't be read; then no task counts as idle (the old behaviour).
+export type IdleReader = (issueIds: string[]) => Promise<string[] | undefined>;
+export const dbIdleReader = (ctx: PluginContext): IdleReader => async (issueIds) => {
+  if (!issueIds.length) return [];
+  try {
+    return (await ctx.db.query<{ issue_id: string }>(IDLE_SQL, [issueIds.join(",")])).map((r) => r.issue_id);
+  } catch (e) {
+    ctx.logger.warn("Idle-task read failed; treating every open task as wanting a run", { error: e instanceof Error ? e.message : String(e) });
+    return undefined;
+  }
+};
+
 const RATE_LIMITED = /\b429\b|rate.?limit|too many requests|quota|usage.?limit|limit reached|insufficient.?(credit|balance|funds)|out of credits|FreeUsageLimit/i;
 export const RATE_LIMIT_FAILURES = 2;
 const DAILY_LIMIT = /per.?day|daily|requests? a day|free-models-per-day|RPD\b/i;
@@ -225,6 +249,7 @@ export interface SnapshotDeps {
   agents: AgentCache;
   readRuns: RunReader;
   readFailures?: FailureReader;
+  readIdle?: IdleReader;
   listCompanies?: () => Promise<Company[]>;
   backendsFor?: BackendsFor;
   blockers?: BlockerCache;
@@ -274,11 +299,13 @@ const exhaustedModels = async (input: {
   for (const pool of pools.filter((p) => p.kind === "quota" && p.companyId && !p.allowOverQuota)) {
     const usage = await store.companyUsage(pool.companyId!).get();
     const backends = backendsFor ? await backendsFor(pool.companyId!) : [];
-    for (const t of pool.placement ?? []) {
+    // A pool that keeps its name has no placement; its own models (not the pool name) are what pause.
+    const targets = pool.placement ?? pool.patterns.filter((m) => m !== virtualModel(pool.localId ?? pool.id)).map((model) => ({ model, backendId: undefined as string | undefined }));
+    for (const t of targets) {
       const backendId = t.backendId ?? pool.endpoint?.backendId;
       const proxy = backends.find((b) => b.id === backendId);
       const upstreams = proxy ? usage[proxy.id]?.upstreams?.[stripPrefix(backendPrefix(proxy), t.model)] : undefined;
-      const upstream = upstreams ? upstreamQuota(upstreams, backends, usage, proxy ? usage[proxy.id]?.upstreamRequests : undefined, now, proxy ? usage[proxy.id]?.upstreamLimits : undefined) : undefined;
+      const upstream = upstreams ? upstreamQuota(upstreams, backends, usage, proxy ? usage[proxy.id]?.upstreamRequests : undefined, now, proxy ? usage[proxy.id]?.upstreamLimits : undefined, proxy ? usage[proxy.id]?.upstreamPrepaid : undefined) : undefined;
       if (upstream?.exhausted && upstream.meter) {
         current[`${pool.companyId}|${t.model}`] = { until: upstream.meter.resetAt, reason: `${upstream.meter.label} used up` };
         continue;
@@ -295,7 +322,7 @@ const exhaustedModels = async (input: {
     const windows = (await store.subscriptionWindows(pool.companyId!).get()) ?? undefined;
     for (const t of pool.placement ?? []) {
       const provider = pool.subscription === "both" ? modelProvider(t.model) : pool.subscription;
-      const used = provider ? subscriptionExhausted(windows, provider, now) : undefined;
+      const used = provider ? subscriptionExhausted(windows, provider, now, { model: t.model, overQuota: pool.overQuotaModels?.includes(t.model) }) : undefined;
       const key = `${pool.companyId}|${t.model}`;
       if (used && !current[key]) current[key] = used;
     }
@@ -345,7 +372,7 @@ const exhaustedModels = async (input: {
   return next;
 };
 
-export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures = dbFailureReader(ctx), listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
+export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures = dbFailureReader(ctx), readIdle = dbIdleReader(ctx), listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
   const [hosts, holds, released, overrides, exemptions] = await Promise.all([
     store.hosts.get(), store.holds.get(), store.released.get(), store.overrides.get(), store.exemptions.get(),
   ]);
@@ -439,6 +466,11 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
       ...(issue.createdAt ? { createdAt: new Date(issue.createdAt).toISOString() } : {}),
     });
   }
+
+  // A task that was "todo" when it was held still waits for its first run; anything else open with no run is checked.
+  const candidates = tasks.filter((t) => !t.hasActiveRun && t.status !== "todo" && (holds[t.issueId]?.statusBefore ?? t.status) !== "todo");
+  const idle = new Set((await readIdle(candidates.map((t) => t.issueId))) ?? []);
+  for (const t of candidates) if (idle.has(t.issueId)) t.idle = true;
 
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),

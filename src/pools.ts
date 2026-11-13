@@ -86,7 +86,8 @@ export const scopedPools = (companyId: string, pools: PoolConfig[], backends: Ba
     // Tasks on the pool's virtual model belong to it (as an entry model when it pins tasks to engines).
     patterns: [...new Set([...p.patterns, virtualModel(p.id)])],
     hosts: p.hosts.map((h) => ({ ...h, id: poolKey(companyId, h.id) })),
-    ...(p.placement ? { placement: p.placement.map((t) => (t.hostId ? { ...t, hostId: poolKey(companyId, t.hostId) } : t)) } : {}),
+    // keepPoolName: no placement, so the scheduler only counts, holds and releases; tasks keep pool/<id>.
+    placement: p.keepPoolName ? undefined : p.placement?.map((t) => (t.hostId ? { ...t, hostId: poolKey(companyId, t.hostId) } : t)),
   }));
 
 export type BackendsFor = (companyId: string) => Promise<Backend[]>;

@@ -88,7 +88,7 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
       {openPool && open?.kind === "waiting" ? (
         <WaitingDialog companyId={context.companyId!} companyPrefix={context.companyPrefix} pool={openPool} pools={data.pools} onClose={() => setOpen(null)} onChanged={refresh} />
       ) : null}
-      {openPool && open?.kind === "usage" ? <PoolUsageDialog companyId={context.companyId!} pool={openPool} onClose={() => setOpen(null)} /> : null}
+      {openPool && open?.kind === "usage" ? <PoolUsageDialog companyId={context.companyId!} companyPrefix={context.companyPrefix} pool={openPool} onClose={() => setOpen(null)} /> : null}
       {allAlerts ? (
         <AlertsDialog companyId={context.companyId!} companyPrefix={context.companyPrefix} pools={data.pools} onClose={() => setAllAlerts(false)} onChanged={refresh} />
       ) : null}

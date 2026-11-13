@@ -140,9 +140,9 @@ const stickyActions = (input: {
       const ownOut = !ownModels.some((x) => !exhausted(x.model));
       const more = left?.[own] !== undefined && left?.[other] !== undefined && left[other]! >= left[own]! + SWITCH_MARGIN;
       if (!ownOut && !more) continue;
-      const to = otherModels.find((x) => !exhausted(x.model))!;
       out.push({
-        kind: "switchAdapter", agentId: a.id, companyId: a.companyId, poolId: pool.id, fromAdapterType: a.adapterType!, toAdapterType: PROVIDER_ADAPTER[other], model: to.model,
+        // The agent keeps the pool's name: its tasks are placed on `to`'s side's models, and it can switch back later.
+        kind: "switchAdapter", agentId: a.id, companyId: a.companyId, poolId: pool.id, fromAdapterType: a.adapterType!, toAdapterType: PROVIDER_ADAPTER[other], model: agentModelName,
         reason: ownOut ? "own subscription used up" : `${left![other]}% left vs ${left![own]}%`,
       });
       switching.add(a.id);
@@ -284,7 +284,12 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     const isExempt = (t: OpenTask) => t.exempt || exemptAgents.has(t.agentId);
     // A parked task needs a person, not a slot: it neither waits in the queue nor is held again.
     const parkedTasks = tasks.filter((t) => snapshot.parked?.[t.issueId] && OPEN.has(t.status) && !t.hasActiveRun);
-    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !snapshot.parked?.[t.issueId]);
+    // An idle task (it ran and nothing new arrived) doesn't want a run: it neither waits nor takes a slot, and a hold it
+    // still has is dropped without a wake-up.
+    for (const t of tasks) {
+      if (t.idle && !t.hasActiveRun && holdsByIssue.has(t.issueId)) actions.push({ kind: "release", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, reason: "idle" });
+    }
+    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !t.idle && !snapshot.parked?.[t.issueId]);
     const held: HeldTask[] = snapshot.holds.filter((h) => groupKey(pool, h.companyId) === key && h.poolId === pool.id);
 
     // B5: an exempt task never waits, so drop any hold it still has.
@@ -315,7 +320,11 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     // operator holds the pool (F2), or while every host is down (E3).
     let used = count;
     queue.sort(byQueueOrder);
-    const paused = heldPools.has(pool.id) || pool.disabled === true;
+    // A quota pool that keeps its name (no placement) can't move a task to another model, so it holds everything while
+    // every one of its models is paused (prepaid credit or quota used up).
+    const ownModels = pool.kind === "quota" ? pool.patterns.filter((m) => m !== virtualModel(pool.localId ?? pool.id)) : [];
+    const allPaused = ownModels.length > 0 && ownModels.every((m) => snapshot.exhausted?.[`${pool.companyId ?? group.companyId}|${m}`]);
+    const paused = heldPools.has(pool.id) || pool.disabled === true || allPaused;
     if (!paused && anyHostUp(pool, snapshot)) {
       // A task whose last wake-up started no run stays queued and is passed over.
       const ready = queue.filter((e) => !snapshot.wakeCooldown?.[e.issueId]);

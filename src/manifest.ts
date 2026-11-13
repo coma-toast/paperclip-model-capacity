@@ -46,7 +46,7 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
   // Only for reading core tables: heartbeat_runs (spike check 4), and cost_events for what runs cost through a backend
   // with no usage API. The plugin keeps its data in plugin state.
-  database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events"] },
+  database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events", "issues", "issue_comments"] },
   instanceConfigSchema: {
     type: "object",
     description: "Pools, limits and model servers are set per company under Company settings → Model capacity. Backends and pools are set on Company settings → Model capacity. The two settings here are optional: how held tasks are labelled and where alerts are posted.",
