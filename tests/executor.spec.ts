@@ -454,7 +454,7 @@ describe("drainRun", () => {
     await exec.drainRun(r, "MBP", pool("gpu"), snapshot({ tasks: [task("t1", { status: "in_progress" })] }), false);
     expect(sent).toEqual(["http://127.0.0.1:3100/api/heartbeat-runs/run-t1/cancel"]);
     const held = (await store.holds.get()).t1;
-    expect(held).toMatchObject({ poolId: "gpu", heldAt: minutesAgo(45), statusBefore: "in_progress" });
+    expect(held).toMatchObject({ poolId: "gpu", heldAt: minutesAgo(45), statusBefore: "in_progress", cancellationSource: "drain" });
     expect(await blockerIds(ctx, "t1")).toHaveLength(1);
     const comments = await ctx.issues.listComments("t1", "c1");
     expect(comments.at(-1)?.body).toMatch(/^Moved off MBP \(its run hadn't finished 30 min/);

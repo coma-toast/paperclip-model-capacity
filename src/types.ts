@@ -146,6 +146,7 @@ export interface HeldTask {
   blockerId?: string;
   // The task's status before the hold blocked it, put back on release.
   statusBefore?: string;
+  cancellationSource?: "drain" | "manual" | "other";
 }
 
 export interface RunningRun {

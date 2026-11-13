@@ -66,7 +66,7 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     if (next.length !== current.length) await ctx.issues.update(issueId, { labelIds: next }, companyId);
   };
 
-  const hold = async (a: Extract<Action, { kind: "hold" }>, pool: PoolConfig, snapshot: Snapshot, opts: { heldAt?: string; comment?: string } = {}) => {
+  const hold = async (a: Extract<Action, { kind: "hold" }>, pool: PoolConfig, snapshot: Snapshot, opts: { heldAt?: string; comment?: string; cancellationSource?: "drain" | "manual" | "other" } = {}) => {
     const holds = await store.holds.get();
     if (holds[a.issueId]) {
       await store.holds.set({ ...holds, [a.issueId]: { ...holds[a.issueId], position: a.position } });
@@ -81,6 +81,7 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     const held: HeldTask = {
       issueId: a.issueId, companyId: a.companyId, poolId: a.poolId, priority: task?.priority ?? "medium", heldAt: opts.heldAt ?? now().toISOString(), position: a.position, blockerId,
       ...(task?.status && task.status !== "blocked" ? { statusBefore: task.status } : {}),
+      ...(opts.cancellationSource ? { cancellationSource: opts.cancellationSource } : {}),
     };
     await store.holds.set({ ...(await store.holds.get()), [a.issueId]: held });
   };
@@ -207,6 +208,7 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
     await hold({ kind: "hold", issueId: run.issueId, companyId: run.companyId, poolId: pool.id, position: 1 }, pool, snapshot, {
       heldAt: run.startedAt ?? run.queuedAt,
       comment: `Moved off ${engineName} (${why}): the run was cancelled and the task restarts on another ${pool.name} engine. Model capacity plugin.`,
+      cancellationSource: "drain",
     });
     await ctx.activity.log({ companyId: run.companyId, message: `Model capacity: moved a run off draining ${engineName}`, entityType: "issue", entityId: run.issueId, metadata: { runId: run.runId, forced } });
   };
