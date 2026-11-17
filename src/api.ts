@@ -1,6 +1,8 @@
 import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
+import { readAdapterModels } from "./adapterModels.js";
 import { collectAgentModels } from "./agentModels.js";
+import { quotaTokenFor } from "./subscriptions.js";
 import { alertKey } from "./alerts.js";
 import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiKind } from "./apis.js";
 import { backendBaseUrl, backendForModel, backendPrefix, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
@@ -454,6 +456,15 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
     const backend = await savedBackend(companyId, params.backendId);
     if (!backend) return { ok: false, error: "Pick a backend for this pool first" };
+    // Terminal CLI (JD-1245): its adapter's model list, read from Paperclip with the board token.
+    if (backend.type === "cli") {
+      if (!backend.adapterType) return { ok: false, error: "Set the backend's adapter (e.g. agy_local) first" };
+      const auth = await quotaTokenFor(ctx, companyId).catch(() => undefined);
+      if (!auth) return { ok: false, error: "Save a board token in the plugin's settings first; Paperclip only shows an adapter's models to a board user" };
+      const list = await readAdapterModels(companyId, backend.adapterType, undefined, { fetch: (u, init) => ctx.http.fetch(u, init), baseUrl: auth.baseUrl, token: auth.token, now: new Date() });
+      if (!list.ok) return { ok: false, error: list.error ?? "No models" };
+      return { ok: true, source: `${backend.adapterType} on the Paperclip host`, models: [...list.models].sort(), prices: Object.fromEntries(list.models.map((m) => [m, { included: true }])) };
+    }
     // Direct to engines: the local engines' models, each with its engine's prefix.
     if (backend.type === "direct") {
       const engines = readBackends(await ctx.config.get(companyId)).filter((b) => apiInfo(b.type).group === "local");

@@ -20,9 +20,11 @@ import { createStore } from "./state/store.js";
 import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { opencodeCopilotToken } from "./opencodeAuth.js";
 import { quotaTokenFor, readSubscriptionWindows } from "./subscriptions.js";
+import { readAdapterModels } from "./adapterModels.js";
 import { PAPERCLIP_SPEND_SQL, sampleUsage, type BackendUsage, type PaperclipSpend, type UsageDeps } from "./usage.js";
 
 const BILLED_CACHE_MS = 30 * 60_000;
+const ADAPTER_MODELS_EVERY_MS = 5 * 60_000;
 
 export interface RuntimeOptions {
   debounceMs?: number;
@@ -296,6 +298,21 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     await store.companyUsage(companyId).set(Object.fromEntries((await withSpentToday(companyId, samples)).map((s) => [s.backendId, s])));
     await refreshEngineAliases(companyId);
     await refreshSubscriptions(companyId);
+    await refreshAdapterModels(companyId);
+  };
+  // JD-1245: each terminal-CLI backend's model list (its adapter's), read with the board token at most every
+  // ADAPTER_MODELS_EVERY_MS; listing nothing a few times in a row marks its pool's models paused (CLI not signed in).
+  const refreshAdapterModels = async (companyId: string) => {
+    const types = [...new Set((await backendsFor(companyId)).filter((b) => b.type === "cli" && b.adapterType).map((b) => b.adapterType!))];
+    if (!types.length) return;
+    const saved = await store.adapterModels(companyId).get();
+    const due = types.filter((t) => !saved[t] || now().getTime() - Date.parse(saved[t].sampledAt) >= ADAPTER_MODELS_EVERY_MS);
+    if (!due.length) return;
+    const auth = await quotaTokenFor(ctx, companyId).catch(() => undefined);
+    if (!auth) return;
+    const next = { ...saved };
+    for (const t of due) next[t] = await readAdapterModels(companyId, t, saved[t], { fetch: (u, init) => ctx.http.fetch(u, init), baseUrl: auth.baseUrl, token: auth.token, now: now() });
+    await store.adapterModels(companyId).set(next);
   };
   // Subscription pools: read the company's Claude/ChatGPT windows with the board token, when one is saved.
   const refreshSubscriptions = async (companyId: string) => {

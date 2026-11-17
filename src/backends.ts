@@ -31,6 +31,10 @@ export interface Backend {
   // With `billing`, the provider's billed cost (BigQuery billing export) replaces LiteLLM's estimate up to the export's
   // cut-off; its key is a company secret bound at backends.<n>.prepaid.<m>.billing.key.
   prepaid?: { provider: string; credit: number; since: string; billing?: PrepaidBilling }[];
+  // Terminal CLI only (JD-1245): the Paperclip adapter that runs it (e.g. agy_local), and how many runs its login takes at
+  // once (the default limit of a pool on it).
+  adapterType?: string;
+  concurrency?: number;
 }
 
 // What the UI may see: never the key binding.
@@ -117,6 +121,8 @@ export const backendsConfigSchema = {
           },
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
+        adapterType: { type: "string", title: "Adapter", description: "Terminal CLI only: the agent adapter that runs it, e.g. agy_local." },
+        concurrency: { type: "integer", title: "Runs at once", minimum: 1, default: 1, description: "Terminal CLI only: runs its login takes at the same time." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
         reachVia: { type: "string", title: "Reached via", description: "Local engines only: the proxy backend's id agents reach it through, or \"direct\"." },
         reachModel: { type: "string", title: "Reach model", description: "Local engines only: the model name agents use to reach it, e.g. litellm/mbp." },

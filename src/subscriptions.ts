@@ -63,21 +63,28 @@ const limiting = (windows: SubscriptionWindow[], opts: { model?: string; overQuo
 // A provider is used up when every connected account of it has a window at 100 %. It comes back when the first
 // account's blocking windows have all reset (an account frees up at its latest blocking reset). With a model, only the
 // windows that limit it count.
-export const subscriptionExhausted = (sample: SubscriptionSample | undefined, provider: SubscriptionProvider, now: Date, opts: { model?: string; overQuota?: boolean } = {}) => {
+// atPercent (JD-1245): a window counts as blocking from this share on (default 100); the extra-usage pool always at 100.
+export const subscriptionExhausted = (sample: SubscriptionSample | undefined, provider: SubscriptionProvider, now: Date, opts: { model?: string; overQuota?: boolean; atPercent?: number } = {}) => {
+  const at = opts.overQuota ? 100 : Math.min(100, opts.atPercent ?? 100);
   const accounts = (sample?.accounts ?? []).filter((a) => a.ok && a.provider === provider);
   if (!accounts.length) return undefined;
   const freeAt: (number | undefined)[] = [];
   let label: string | undefined;
+  let top = 100;
   for (const a of accounts) {
-    const blocking = limiting(a.windows, opts).filter((w) => w.usedPercent !== null && w.usedPercent >= 100 && (!w.resetsAt || Date.parse(w.resetsAt) > now.getTime()));
-    label ??= blocking[0]?.label;
+    const blocking = limiting(a.windows, opts).filter((w) => w.usedPercent !== null && w.usedPercent >= at && (!w.resetsAt || Date.parse(w.resetsAt) > now.getTime()));
+    if (blocking[0] && !label) {
+      label = blocking[0].label;
+      top = blocking[0].usedPercent!;
+    }
     if (!blocking.length) return undefined;
     const resets = blocking.map((w) => (w.resetsAt ? Date.parse(w.resetsAt) : NaN));
     freeAt.push(resets.some(Number.isNaN) ? undefined : Math.max(...resets));
   }
   const known = freeAt.filter((t): t is number => t !== undefined);
   const until = known.length === freeAt.length ? new Date(Math.min(...known)).toISOString() : undefined;
-  return { until, reason: `${provider === "anthropic" ? "Claude" : "ChatGPT"} subscription ${label ? `${label} ` : ""}used up` };
+  const name = `${provider === "anthropic" ? "Claude" : "ChatGPT"} subscription ${label ? `${label} ` : ""}`;
+  return { until, reason: top >= 100 ? `${name}used up` : `${name}at ${Math.round(top)} % (pauses at ${at} %)` };
 };
 
 // How much of a provider's quota is left, 0-100: the best account's tightest window that hasn't reset yet.

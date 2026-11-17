@@ -34,7 +34,7 @@ export const HostDots = ({ hosts }: { hosts: PoolSummary["hosts"] }) =>
 
 // What a pool's paused models ran out of, for its badge: money, a subscription's limit, or a request quota.
 export const usedUpLabel = (reasons: string[]) =>
-  reasons.some((r) => /subscription/i.test(r) && /used up/i.test(r)) ? "subscription limit"
+  reasons.some((r) => /subscription/i.test(r) && /used up|pauses at/i.test(r)) ? "subscription limit"
     : reasons.some((r) => /credit|spend|budget|key limit/i.test(r) && /used up/i.test(r)) ? "out of credit"
       : reasons.some((r) => /requests/i.test(r) && /used up/i.test(r)) ? "requests used up"
         : undefined;

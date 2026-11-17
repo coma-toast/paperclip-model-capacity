@@ -1,5 +1,5 @@
 import { OPEN_TASK_STATUSES, PRIORITY_RANK, virtualModel } from "../constants.js";
-import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canRun } from "./model.js";
+import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canAgentRun, canRun, cannotRunKey, type RunLimits } from "./model.js";
 import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
 interface Group {
@@ -79,6 +79,9 @@ const stickyActions = (input: {
   const runIssues = new Set(snapshot.runs.map((r) => r.issueId));
   const occupying = snapshot.runs.filter((r) => r.poolId === pool.id && occupiesSlot(r));
   const exhausted = (model: string) => snapshot.exhausted?.[`${pool.companyId ?? ""}|${model}`];
+  // JD-1245: a CLI adapter runs only the models it lists, and an agent never gets a model its runs proved it can't use.
+  const limits: RunLimits = { adapterModels: snapshot.adapterModels, cannotRun: snapshot.cannotRun };
+  const runs = (t: OpenTask, model: string) => canAgentRun(t, model, limits);
   const free = new Map<string, number>();
   for (const t of targets) {
     // A quota pool's model has no engine: it has room unless its quota is used up (the pool limit still applies).
@@ -153,7 +156,7 @@ const stickyActions = (input: {
   // the other subscription's models are too.
   const unavailable = (x: PlacementTarget) => (x.hostId ? !snapshot.hosts[x.hostId]?.up : Boolean(exhausted(x.model)));
   const outOfQuota = (t: OpenTask) => {
-    const usable = targets.filter((x) => canRun(t.adapterType, x.model) || pool.switchAdapters);
+    const usable = targets.filter((x) => runs(t, x.model) || pool.switchAdapters);
     return usable.length > 0 && usable.every(unavailable);
   };
 
@@ -166,13 +169,16 @@ const stickyActions = (input: {
       continue;
     }
     // Only models the task's agent can run (a Claude Code agent can't take a GPT model).
-    const fits = (x: PlacementTarget | undefined) => x !== undefined && canRun(t.adapterType, x.model);
+    const fits = (x: PlacementTarget | undefined) => x !== undefined && runs(t, x.model);
     let target = t.model ? byModel.get(t.model) : undefined;
+    // A task the plugin put on a model its agent's runs then failed on ("not available for this API key") moves off it.
+    // A model a person set stays.
+    const learned = target !== undefined && !t.pinned && Boolean(snapshot.cannotRun?.[cannotRunKey(t.agentId, target.model)]);
     if (!fits(target)) target = undefined;
     // In a quota pool, a task still on its agent's own model (no override) may go to another of the agent's models when
     // that one is used up or full; a model someone set on the task stays.
     if (pool.kind === "quota" && target && t.model === t.agentModel && (exhausted(target.model) || (free.get(target.model) ?? 0) <= 0)) target = undefined;
-    let reason: PlaceReason | undefined;
+    let reason: PlaceReason | undefined = learned ? "agentCannotRun" : undefined;
     // An engine capped at 0 takes no new work: a task the plugin placed there that hasn't started moves at once (a
     // running one finishes where it is).
     if (target && snapshot.placements?.[t.issueId] === t.model && (unavailableTooLong(target) || target.cap === 0)) {
@@ -347,6 +353,16 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     }
 
     actions.push(...waitAlerts(pool, queue, now, snapshot.now), ...parkedAlerts(pool, parkedTasks, snapshot));
+  }
+  // JD-1245: each agent + model pair learned from failed runs is reported until it expires.
+  for (const c of Object.values(snapshot.cannotRun ?? {})) {
+    actions.push({
+      kind: "alert",
+      alert: {
+        kind: "agentCannotRun", subject: cannotRunKey(c.agentId, c.model), state: "start", companyId: c.companyId, at: snapshot.now,
+        message: `An agent's runs on ${c.model} failed because it can't use that model (${c.error.slice(0, 120)}); not placing it there until ${c.until}`,
+      },
+    });
   }
   return [...actions, ...overflowActions()];
 };
