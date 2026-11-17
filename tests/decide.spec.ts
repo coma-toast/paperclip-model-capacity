@@ -197,8 +197,9 @@ describe("scope and filters (A3)", () => {
     expect(holds(a)).toEqual([["t1", 1]]);
   });
 
-  it("doesn't hold an in_review task", () => {
-    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("x", { status: "in_review" }), task("t1")] }));
+  // JD-788, as #11 does it: an in_review task with nothing new is idle and isn't held; one with new work still waits.
+  it("doesn't hold an idle in_review task", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("x", { status: "in_review", idle: true }), task("t1")] }));
     expect(holds(a)).toEqual([["t1", 1]]);
   });
 });

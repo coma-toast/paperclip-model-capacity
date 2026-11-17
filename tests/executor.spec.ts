@@ -50,6 +50,26 @@ describe("hold", () => {
     expect(await ctx.issues.listComments("t1", "c1")).toHaveLength(1);
     expect((await store.holds.get()).t1.position).toBe(1);
   });
+
+  it("posts the queue note once per task and pool, however often it's held again", async () => {
+    const { ctx, exec, store, snap } = setup();
+    for (let i = 0; i < 3; i++) {
+      await exec.execute([holdAction("t1", 1)], snap);
+      await exec.execute([releaseAction("t1")], snap);
+    }
+    expect(await ctx.issues.listComments("t1", "c1")).toHaveLength(1);
+    expect(Object.keys(await store.holdNotes.get())).toEqual(["t1|gpu"]);
+    // Another pool gets its own note.
+    await exec.execute([{ ...holdAction("t1", 1), poolId: "cpu" } as Action], snapshot({ pools: [pool("gpu", { mode: "enforce" }), pool("cpu", { mode: "enforce" })], tasks: [task("t1")] }));
+    expect(await ctx.issues.listComments("t1", "c1")).toHaveLength(2);
+  });
+
+  it("forgets the note after 30 days, so a task back in the pool much later gets it again", async () => {
+    const { ctx, exec, store, snap } = setup();
+    await store.holdNotes.set({ "t1|gpu": new Date(Date.parse(NOW) - 31 * 86_400_000).toISOString() });
+    await exec.execute([holdAction("t1", 1)], snap);
+    expect(await ctx.issues.listComments("t1", "c1")).toHaveLength(1);
+  });
 });
 
 describe("release", () => {

@@ -221,6 +221,9 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
         ...(keyBinding ? { key: keyBinding } : {}),
+        // Fields this form doesn't edit (set in the host's config form) stay as they were.
+        ...(previous?.logsKey ? { logsKey: previous.logsKey } : {}),
+        ...(previous?.prepaid ? { prepaid: previous.prepaid } : {}),
       };
       const backends = previous ? current.map((b) => (b.id === id ? backend : b)) : [...current, backend];
       await savePluginConfig(companyId, { ...config, backends });
@@ -699,7 +702,13 @@ const AgentsSection = ({ pool, saved, agents, error, onChange, onAgentsChanged }
   return (
     <div style={{ display: "grid", gap: 6 }}>
       <SectionTitle title="Agents on this pool" hint="Agents use the pool instead of a specific model by pointing at its agent model." />
-      {pool.kind ? <span style={{ fontSize: 13 }}>Agents use <code>{agentModel}</code>; the pool picks {pool.kind === "engine" ? "the engine" : "a model with quota left"} for each task.</span> : null}
+      {pool.kind ? <span style={{ fontSize: 13 }}>Agents use <code>{agentModel}</code>; {pool.keepPoolName ? "tasks keep that name and the pool only counts and queues them" : `the pool picks ${pool.kind === "engine" ? "the engine" : "a model with quota left"} for each task`}.</span> : null}
+      {pool.kind ? (
+        <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
+          <input type="checkbox" checked={pool.keepPoolName === true} disabled={pool.switchAdapters === true} onChange={(e) => onChange({ keepPoolName: e.target.checked || undefined })} />
+          <span>Keep the pool name on tasks<br /><span style={MUTED}>Never pin a task to one of the pool's models: tasks keep <code>{agentModel}</code> and the agent's runtime picks the model. Only for OpenCode agents through LiteLLM, where LiteLLM has a model named after the pool. Claude Code and Codex can't run a pool name.</span></span>
+        </label>
+      ) : null}
       {pool.kind === "quota" ? (
         <label style={{ display: "flex", gap: 6, alignItems: "flex-start", fontSize: 13 }}>
           <input type="checkbox" checked={pool.switchAdapters === true} onChange={(e) => onChange({ switchAdapters: e.target.checked || undefined })} />
@@ -877,6 +886,12 @@ const KindPoolCard = ({ pool, companyId, backends, uses, agents, saved, onAgents
             <input type="checkbox" checked={pool.allowOverQuota === true} onChange={(e) => onChange({ allowOverQuota: e.target.checked || undefined })} />
             <span>Keep going over the quota<br /><span style={MUTED}>When a backend or subscription reports its quota used up, keep giving these models tasks instead of pausing them. Only where overage is billed or covered (Copilot premium requests past the allowance, ChatGPT credits past the weekly limit); otherwise the requests just fail. A run that fails with a rate- or usage-limit message still pauses its model.</span></span>
           </label>
+          {pool.subscription && !pool.allowOverQuota ? (
+            <Field label="Models that run on extra usage" hint="Optional, comma-separated. These keep taking tasks on the subscription's extra usage after its limits are used up (until the extra-usage pool is), while the pool's other models pause. E.g. claude-opus-5-5, so Opus takes over when Fable's limit or the weekly limit is reached." error={err("overQuotaModels")}>
+              <input style={inputStyle} placeholder="None" defaultValue={(pool.overQuotaModels ?? []).join(", ")}
+                onBlur={(e) => { const list = e.target.value.split(",").map((m) => m.trim()).filter(Boolean); onChange({ overQuotaModels: list.length ? list : undefined }); }} />
+            </Field>
+          ) : null}
           <Field label="Browse models from" hint={`Only picks which models the list shows; switching keeps the ones you ticked. Each model goes through the backend its name starts with (litellm/… through LiteLLM), and pauses on that backend's limits. Bare Claude and GPT names are subscription models.${models.length ? ` This pool uses: ${modelBackends.join(", ")}.` : ""}`} error={err("backend")}>
             <select style={inputStyle} value={browse} onChange={(e) => setBrowse(e.target.value)}>
               <option value="">Subscription and agents' models</option>

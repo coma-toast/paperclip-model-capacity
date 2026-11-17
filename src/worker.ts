@@ -5,13 +5,16 @@ import { registerApi } from "./api.js";
 import manifest from "./manifest.js";
 import { authorizeMetricsRequest, collectMetrics } from "./metrics.js";
 import { createRuntime, type Runtime } from "./runtime.js";
+import { scopeRetryContext } from "./scopeRetry.js";
 
 const CONFIG_KEYS = Object.keys(manifest.instanceConfigSchema?.properties ?? {});
 let runtime: Runtime | undefined;
 let pluginCtx: PluginContext | undefined;
 
 const plugin = definePlugin({
-  async setup(ctx) {
+  async setup(rawCtx) {
+    // Paperclip 2026.1110+ refuses some background host calls for invocation scope; they're retried (scopeRetry.ts).
+    const ctx = scopeRetryContext(rawCtx);
     pluginCtx = ctx;
     runtime = createRuntime(ctx);
     runtime.start();

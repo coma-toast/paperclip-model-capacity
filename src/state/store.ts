@@ -140,6 +140,9 @@ export const createStore = (state: PluginStateClient) => {
     runCounts: (companyId: string) => blob<RunCounts>(state, instanceKey(`runCounts:${companyId}`), () => ({ day: "", counts: {}, seen: [] })),
     holds: blob<Record<string, HeldTask>>(state, instanceKey("holds"), () => ({})),
     released: blob<Record<string, ReleasedTask>>(state, instanceKey("released"), () => ({})),
+    // When each task last got the "Waiting for <pool>" note, by "<issueId>|<poolId>": a task gets it once per pool, not
+    // on every hold (a task held and released over and over filled its thread, and then its agent's context).
+    holdNotes: blob<Record<string, string>>(state, instanceKey("holdNotes"), () => ({})),
     // Held tasks whose wake-up started no run (their agent is stuck, or Paperclip's recovery parked the task), by issue
     // id until when: they keep waiting without taking the slot.
     wakeCooldown: blob<Record<string, string>>(state, instanceKey("wakeCooldown"), () => ({})),
