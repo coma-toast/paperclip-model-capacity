@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { APIS, apiInfo, type ApiKind } from "./apis.js";
+import type { PrepaidBilling } from "./billing.js";
 
 // A backend is one model endpoint (a proxy, a cloud API or a local engine), defined once per company in the plugin's
 // company config. Pools pick a backend; a proxy pool can also watch local-engine backends. The key is a company secret
@@ -25,6 +26,11 @@ export interface Backend {
   reachVia?: string;
   // The model name agents use to reach this engine, e.g. "litellm/mbp"; the plugin pins tasks onto it.
   reachModel?: string;
+  // LiteLLM only: prepaid credit with an upstream provider (e.g. Gemini API prepaid billing). The plugin reads what
+  // LiteLLM has spent on that provider since `since` and pauses its models once it reaches the credit.
+  // With `billing`, the provider's billed cost (BigQuery billing export) replaces LiteLLM's estimate up to the export's
+  // cut-off; its key is a company secret bound at backends.<n>.prepaid.<m>.billing.key.
+  prepaid?: { provider: string; credit: number; since: string; billing?: PrepaidBilling }[];
 }
 
 // What the UI may see: never the key binding.
@@ -48,7 +54,11 @@ export const readBackends = (config: Record<string, unknown>): Backend[] =>
   Array.isArray(config.backends) ? (config.backends as Backend[]).filter((b) => b && typeof b.id === "string" && typeof b.type === "string") : [];
 
 export const summarizeBackends = (config: Record<string, unknown>): BackendSummary[] =>
-  readBackends(config).map(({ key, logsKey, ...rest }) => ({ ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}) }));
+  readBackends(config).map(({ key, logsKey, prepaid, ...rest }) => ({
+    ...rest, hasKey: Boolean(key), ...(logsKey ? { hasLogsKey: true } : {}),
+    // The billing key binding stays on the worker side, like the backend's own key.
+    ...(prepaid ? { prepaid: prepaid.map((p) => (p.billing ? { ...p, billing: (({ key: _k, ...b }) => b)(p.billing) } : p)) } : {}),
+  }));
 
 // Rendered by the host's plugin config form too, so every field gets a title, a description and (where one exists)
 // a default; the Model capacity page's Add/Edit backend form is the main editor. No x-paperclip-advanced: the host's
@@ -82,6 +92,29 @@ export const backendsConfigSchema = {
           format: "secret-ref",
           title: "Admin key for usage logs",
           description: "LiteLLM only, optional: a read-only admin key (role proxy_admin_viewer). Lets the plugin count each upstream model's requests today for the upstream quotas.",
+        },
+        prepaid: {
+          type: "array", title: "Prepaid credit",
+          description: "LiteLLM only, needs the admin key: prepaid credit with an upstream provider. The plugin counts LiteLLM's spend on that provider since the date and pauses its models when the credit is used up.",
+          items: {
+            type: "object", required: ["provider", "credit", "since"],
+            properties: {
+              provider: { type: "string", title: "Provider", description: "LiteLLM's provider name, e.g. gemini." },
+              credit: { type: "number", title: "Credit (USD)", minimum: 0 },
+              since: { type: "string", title: "Since", description: "When this credit was loaded (YYYY-MM-DD)." },
+              billing: {
+                type: "object", title: "Billing export",
+                description: "Optional: read what the provider actually billed (after discounts and promotional credits) from its Cloud Billing FOCUS export in BigQuery, instead of LiteLLM's list-price estimate.",
+                required: ["table"],
+                properties: {
+                  key: { format: "secret-ref", title: "Service-account key", description: "A company secret holding a Google service-account JSON key with BigQuery read access to the export." },
+                  table: { type: "string", title: "Export table", description: "project.dataset.table of the FOCUS export." },
+                  service: { type: "string", title: "Service", default: "Gemini API", description: "The FOCUS ServiceName to count." },
+                  location: { type: "string", title: "Location", default: "US", description: "The dataset's location." },
+                },
+              },
+            },
+          },
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },

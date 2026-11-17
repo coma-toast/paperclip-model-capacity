@@ -131,7 +131,7 @@ describe("pools across two subscriptions that switch agents' adapters", () => {
   it("switches an idle agent to Codex when Claude is used up, and its task waits that cycle", () => {
     const s = snapshot({ pools: [cheap({ switchAdapters: true })], poolAgents: agents, exhausted: claudeOut, tasks: [claudeTask] });
     expect(short(decide(s))).toEqual(["switchAdapter", "hold t1"]);
-    expect(switches(s)).toEqual([{ kind: "switchAdapter", agentId: "a1", companyId: "c1", poolId: "gpu", fromAdapterType: "claude_local", toAdapterType: "codex_local", model: "l/gpt-5.6-terra", reason: "own subscription used up" }]);
+    expect(switches(s)).toEqual([{ kind: "switchAdapter", agentId: "a1", companyId: "c1", poolId: "gpu", fromAdapterType: "claude_local", toAdapterType: "codex_local", model: "pool/gpu", reason: "own subscription used up" }]);
   });
 
   it("switches when the other subscription has 20 points more quota left, not for less", () => {

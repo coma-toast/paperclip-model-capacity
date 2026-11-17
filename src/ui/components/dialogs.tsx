@@ -59,10 +59,27 @@ const useRun = (onChanged: () => void) => {
 const waitedSince = (at: string) => formatWait(Math.max(0, Math.round((Date.now() - Date.parse(at)) / 1000)));
 
 // hover: shown when the link is hovered (a task's first post).
-const TaskLink = ({ companyPrefix, identifier, title, hover }: { companyPrefix: string | null; identifier?: string; title?: string; hover?: string }) => {
+// onOpen: called after the link navigates (closes the dialog, which would otherwise stay over the task's page).
+const TaskLink = ({ companyPrefix, identifier, title, hover, onOpen }: { companyPrefix: string | null; identifier?: string; title?: string; hover?: string; onOpen?: () => void }) => {
   const nav = useHostNavigation();
   const label = <><strong>{identifier ?? "Task"}</strong>{title ? <span style={{ opacity: 0.8 }}> {title}</span> : null}</>;
-  return identifier && companyPrefix ? <a {...nav.linkProps(`/${companyPrefix}/issues/${identifier}`)} title={hover} style={{ color: "inherit" }}>{label}</a> : <span title={hover}>{label}</span>;
+  if (!identifier || !companyPrefix) return <span title={hover}>{label}</span>;
+  const link = nav.linkProps(`/${companyPrefix}/issues/${identifier}`);
+  return (
+    <a {...link} title={hover} style={{ color: "inherit" }} onClick={(e) => { e.stopPropagation(); link.onClick(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) onOpen?.(); }}>
+      {label}
+    </a>
+  );
+};
+
+// A whole run row opens its task (and closes the dialog), not just the task text.
+const useOpenTask = (companyPrefix: string | null, onClose: () => void) => {
+  const nav = useHostNavigation();
+  return (identifier?: string) => {
+    if (!identifier || !companyPrefix) return;
+    nav.navigate(`/${companyPrefix}/issues/${identifier}`);
+    onClose();
+  };
 };
 
 // A local engine's runs: what holds its slots now, what's queued behind its own agent, and what the server reports.
@@ -73,6 +90,7 @@ export const EngineRunsDialog = ({ row, companyId, companyPrefix, onClose, onCha
 }) => {
   const drainRun = usePluginAction("drain-run");
   const { run, busy } = useRun(onChanged);
+  const openTask = useOpenTask(companyPrefix, onClose);
   const [moved, setMoved] = useState<Set<string>>(new Set());
   const moveNow = (runId: string) => {
     setMoved((m) => new Set([...m, runId]));
@@ -93,15 +111,15 @@ export const EngineRunsDialog = ({ row, companyId, companyPrefix, onClose, onCha
           <thead><tr style={{ textAlign: "left", ...MUTED }}><th style={{ padding: "4px 6px" }}>Task</th><th style={{ padding: "4px 6px" }}>Agent</th><th style={{ padding: "4px 6px" }}>Model</th><th style={{ padding: "4px 6px" }}>State</th></tr></thead>
           <tbody>
             {runs.map((r) => (
-              <tr key={r.runId} style={{ borderTop: BORDER }}>
-                <td style={{ padding: "6px" }}><TaskLink companyPrefix={companyPrefix} identifier={r.identifier} title={r.title} hover={r.description} /></td>
+              <tr key={r.runId} style={{ borderTop: BORDER, cursor: r.identifier ? "pointer" : undefined }} onClick={() => openTask(r.identifier)}>
+                <td style={{ padding: "6px" }}><TaskLink companyPrefix={companyPrefix} identifier={r.identifier} title={r.title} hover={r.description} onOpen={onClose} /></td>
                 <td style={{ padding: "6px" }}>{r.agentName ?? "?"}</td>
                 <td style={{ padding: "6px", ...MUTED }}>{r.model ?? "?"}</td>
                 <td style={{ padding: "6px", whiteSpace: "nowrap" }}>
                   {r.status === "running" ? `running ${r.startedAt ? waitedSince(r.startedAt) : ""}` : `queued ${r.queuedAt ? waitedSince(r.queuedAt) : ""}`}
                   {!r.occupiesSlot ? <span style={MUTED}> · no slot (waits on its agent)</span> : null}
                   {r.draining ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, whiteSpace: "normal" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, whiteSpace: "normal" }} onClick={(e) => e.stopPropagation()}>
                       <span style={MUTED}>
                         {moved.has(r.runId) ? "moving…" : r.moveAt ? (Date.parse(r.moveAt) > Date.now() ? `moves in ${formatWait(Math.round((Date.parse(r.moveAt) - Date.now()) / 1000))}` : "moving…") : "finishes here (not placed by the plugin)"}
                       </span>
@@ -315,7 +333,33 @@ interface PoolUsage {
   backends?: BackendUsageRow[];
   models?: { model: string; price?: ModelPrice; runsNow: number; runsToday: number; limits?: ModelLimits; paused?: { until?: string; reason: string } }[];
   engines?: { id: string; name: string; cap?: number; reachModel?: string; up?: boolean; usage?: BackendUsage; runsNow: number; runsToday: number }[];
+  runs?: { runId: string; identifier?: string; title?: string; description?: string; agentName?: string; model?: string; status: string; startedAt?: string; queuedAt?: string; occupiesSlot: boolean }[];
 }
+
+// The pool's runs now, like an engine's runs dialog: running first, then queued, oldest first.
+const PoolRunsTable = ({ runs, companyPrefix, onClose }: { runs: NonNullable<PoolUsage["runs"]>; companyPrefix: string | null; onClose: () => void }) => {
+  const openTask = useOpenTask(companyPrefix, onClose);
+  const sorted = [...runs].sort((a, b) => Number(b.occupiesSlot) - Number(a.occupiesSlot) || (a.startedAt ?? a.queuedAt ?? "").localeCompare(b.startedAt ?? b.queuedAt ?? ""));
+  if (!sorted.length) return <span style={MUTED}>No Paperclip runs in this pool now.</span>;
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <thead><tr style={{ textAlign: "left", ...MUTED }}><th style={{ padding: "4px 6px" }}>Task</th><th style={{ padding: "4px 6px" }}>Agent</th><th style={{ padding: "4px 6px" }}>Model</th><th style={{ padding: "4px 6px" }}>State</th></tr></thead>
+      <tbody>
+        {sorted.map((r) => (
+          <tr key={r.runId} style={{ borderTop: BORDER, cursor: r.identifier ? "pointer" : undefined }} onClick={() => openTask(r.identifier)}>
+            <td style={{ padding: "6px" }}><TaskLink companyPrefix={companyPrefix} identifier={r.identifier} title={r.title} hover={r.description} onOpen={onClose} /></td>
+            <td style={{ padding: "6px" }}>{r.agentName ?? "?"}</td>
+            <td style={{ padding: "6px", ...MUTED }}>{r.model ?? "?"}</td>
+            <td style={{ padding: "6px", whiteSpace: "nowrap" }}>
+              {r.status === "running" ? `running ${r.startedAt ? waitedSince(r.startedAt) : ""}` : `queued ${r.queuedAt ? waitedSince(r.queuedAt) : ""}`}
+              {!r.occupiesSlot ? <span style={MUTED}> · no slot (waits on its agent)</span> : null}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
 
 const limitText = (l?: ModelLimits) => [l?.rpm ? `${l.rpm}/min` : "", l?.tpm ? `${Math.round(l.tpm / 1000)}k tok/min` : "", l?.rpd ? `${l.rpd}/day` : ""].filter(Boolean).join(" · ") || "—";
 const untilText = (until?: string) => (until ? new Date(until).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "reset unknown");
@@ -333,7 +377,7 @@ const UsageGrid = ({ cols, head, rows }: { cols: string; head: string[]; rows: R
 
 // Everything that limits one pool: its own slots, its backend's spend and quotas, and per model or engine the price,
 // limits, runs now and today, and whether the scheduler has paused it.
-export const PoolUsageDialog = ({ companyId, pool, onClose }: { companyId: string; pool: PoolSummary; onClose: () => void }) => {
+export const PoolUsageDialog = ({ companyId, companyPrefix = null, pool, onClose }: { companyId: string; companyPrefix?: string | null; pool: PoolSummary; onClose: () => void }) => {
   const usage = usePluginData<PoolUsage>("pool-usage", { companyId, poolId: pool.id });
   const refreshUsage = usePluginAction("refresh-usage");
   const { run, busy } = useRun(() => usage.refresh());
@@ -353,6 +397,7 @@ export const PoolUsageDialog = ({ companyId, pool, onClose }: { companyId: strin
       </div>
       {usage.loading && !u ? <Spinner /> : !u?.found ? <span>This pool isn't set up any more.</span> : (
         <>
+          <PoolRunsTable runs={u.runs ?? []} companyPrefix={companyPrefix} onClose={onClose} />
           {(u.backends ?? []).map((b) => (
             <div key={b.id} style={{ display: "grid", gap: 4, padding: "8px 10px", border: BORDER, borderRadius: 8, fontSize: 13 }}>
               <strong>{b.name}</strong>

@@ -9,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "kind", "engines", "fallbackPool", "fallbackAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes", "dailyRunCap", "allowOverQuota", "subscription", "switchAdapters"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "kind", "engines", "fallbackPool", "fallbackAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes", "dailyRunCap", "allowOverQuota", "overQuotaModels", "subscription", "switchAdapters", "keepPoolName"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
@@ -50,6 +50,9 @@ const validateCommon = (raw: Record<string, unknown>, at: string, errors: FieldE
   if (raw.disabled !== undefined && typeof raw.disabled !== "boolean") errors.push({ field: `${at}.disabled`, message: "Must be true or false" });
   if (raw.limitFromEngines !== undefined && typeof raw.limitFromEngines !== "boolean") errors.push({ field: `${at}.limitFromEngines`, message: "Must be true or false" });
   if (raw.allowOverQuota !== undefined && typeof raw.allowOverQuota !== "boolean") errors.push({ field: `${at}.allowOverQuota`, message: "Must be true or false" });
+  if (raw.overQuotaModels !== undefined && !(Array.isArray(raw.overQuotaModels) && raw.overQuotaModels.every((m) => typeof m === "string" && m.trim()))) {
+    errors.push({ field: `${at}.overQuotaModels`, message: "Must be a list of model names" });
+  }
   if (!["private", "shared"].includes(raw.privacy as string)) errors.push({ field: `${at}.privacy`, message: "Must be private or shared" });
   if (raw.mode !== undefined && !["observe", "enforce"].includes(raw.mode as string)) errors.push({ field: `${at}.mode`, message: "Must be observe or enforce" });
   if (raw.scope !== undefined && !["instance", "company"].includes(raw.scope as string)) errors.push({ field: `${at}.scope`, message: "Must be instance or company" });
@@ -143,6 +146,8 @@ export const validatePools = (input: unknown): ValidationResult => {
     if (raw.dailyRunCap !== undefined && !isWhole(raw.dailyRunCap, 1)) errors.push({ field: `${at}.dailyRunCap`, message: "Must be a whole number of runs, 1 or more" });
     if (raw.subscription !== undefined && !["anthropic", "openai", "both"].includes(raw.subscription as string)) errors.push({ field: `${at}.subscription`, message: "Must be anthropic, openai or both" });
     if (raw.switchAdapters !== undefined && typeof raw.switchAdapters !== "boolean") errors.push({ field: `${at}.switchAdapters`, message: "Must be true or false" });
+    if (raw.keepPoolName !== undefined && typeof raw.keepPoolName !== "boolean") errors.push({ field: `${at}.keepPoolName`, message: "Must be true or false" });
+    if (raw.keepPoolName === true && raw.switchAdapters === true) errors.push({ field: `${at}.keepPoolName`, message: "A pool that switches agents between Claude Code and Codex must pin models" });
     // With a backend, the API, prefix and address come from it (checked against the company's backends on save). A quota
     // pool needs none: each model's backend comes from its prefix.
     if (isText(raw.backend) || raw.kind === "quota") {
