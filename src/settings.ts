@@ -9,7 +9,7 @@ export interface FieldError {
 
 export type ValidationResult = { ok: true; pools: PoolConfig[] } | { ok: false; errors: FieldError[] };
 
-const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "kind", "engines", "fallbackPool", "fallbackAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes", "dailyRunCap", "allowOverQuota", "overQuotaModels", "subscription", "switchAdapters", "keepPoolName"];
+const POOL_FIELDS = ["id", "name", "backend", "watch", "api", "prefix", "endpoint", "patterns", "limit", "limitFromEngines", "disabled", "sticky", "reassignAfterMinutes", "agentModel", "kind", "engines", "fallbackPool", "fallbackAfterMinutes", "privacy", "mode", "scope", "companies", "hosts", "overflow", "overflowModel", "alertAfterMinutes", "dailyRunCap", "allowOverQuota", "overQuotaModels", "subscription", "switchAdapters", "keepPoolName", "adapterTypes", "pauseAtPercent"];
 const HOST_FIELDS = ["id", "name", "engine", "baseUrl", "declaredSlots", "credential"];
 const ENDPOINT_FIELDS = ["baseUrl", "credential", "slots"];
 const OVERFLOW_FIELDS = ["pools", "afterMinutes", "whenHostsDown", "immediately"];
@@ -147,6 +147,8 @@ export const validatePools = (input: unknown): ValidationResult => {
     if (raw.subscription !== undefined && !["anthropic", "openai", "both"].includes(raw.subscription as string)) errors.push({ field: `${at}.subscription`, message: "Must be anthropic, openai or both" });
     if (raw.switchAdapters !== undefined && typeof raw.switchAdapters !== "boolean") errors.push({ field: `${at}.switchAdapters`, message: "Must be true or false" });
     if (raw.keepPoolName !== undefined && typeof raw.keepPoolName !== "boolean") errors.push({ field: `${at}.keepPoolName`, message: "Must be true or false" });
+    if (raw.adapterTypes !== undefined && !isTextList(raw.adapterTypes)) errors.push({ field: `${at}.adapterTypes`, message: "Must be a list of adapter types" });
+    if (raw.pauseAtPercent !== undefined && !(typeof raw.pauseAtPercent === "number" && raw.pauseAtPercent > 0 && raw.pauseAtPercent <= 100)) errors.push({ field: `${at}.pauseAtPercent`, message: "Must be a percentage above 0, up to 100" });
     if (raw.keepPoolName === true && raw.switchAdapters === true) errors.push({ field: `${at}.keepPoolName`, message: "A pool that switches agents between Claude Code and Codex must pin models" });
     // With a backend, the API, prefix and address come from it (checked against the company's backends on save). A quota
     // pool needs none: each model's backend comes from its prefix.

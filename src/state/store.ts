@@ -1,7 +1,8 @@
 import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
 import { HISTORY_MAX_PER_DAY, STATE_SCHEMA_VERSION } from "../constants.js";
-import type { Action, AlertEvent, ExhaustedModel, HeldTask, HostStatus, OverrideRecord, ParkedTask, PoolConfig, ReleasedTask } from "../types.js";
+import type { AdapterModelsSample } from "../adapterModels.js";
+import type { Action, AlertEvent, CannotRun, ExhaustedModel, HeldTask, HostStatus, OverrideRecord, ParkedTask, PoolConfig, ReleasedTask } from "../types.js";
 import type { BackendUsage } from "../usage.js";
 
 export interface HistoryEntry {
@@ -118,6 +119,10 @@ export const createStore = (state: PluginStateClient) => {
     hosts: blob<Record<string, HostStatus>>(state, instanceKey("hosts"), () => ({})),
     // Quota models currently used up ("<companyId>|<model>"), with since/until.
     exhausted: blob<Record<string, ExhaustedModel>>(state, instanceKey("exhausted"), () => ({})),
+    // JD-1245: agent + model pairs learned from failed runs ("<agentId>|<model>"), until each expires.
+    cannotRun: blob<Record<string, CannotRun>>(state, instanceKey("cannotRun"), () => ({})),
+    // JD-1245: each CLI adapter's model list for a company, by adapter type.
+    adapterModels: (companyId: string) => blob<Record<string, AdapterModelsSample>>(state, instanceKey(`adapterModels:${companyId}`), () => ({})),
     // Latest usage sample per backend id, for one company.
     // Names routed only to each engine (by engine id), from the proxies' routing, for engine pools.
     // When the earlier pool settings were converted to engine/quota pools (P2.7.4), until the note is dismissed.

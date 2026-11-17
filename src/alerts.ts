@@ -15,6 +15,7 @@ const TITLES: Readonly<Record<AlertKind, string>> = {
   overLimit: "Pool over its limit",
   overrideRestoreFailed: "Model override not restored",
   quotaExhausted: "Quota exhausted",
+  agentCannotRun: "Agent can't run its model",
   pluginError: "Model capacity plugin error",
 };
 

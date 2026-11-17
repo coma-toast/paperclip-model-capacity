@@ -62,6 +62,10 @@ export const resolvePool = (pool: PoolConfig, backends: Backend[], aliases: Engi
     }),
   } : {};
   if (!b) return { ...pool, ...quota };
+  // A terminal-CLI pool (JD-1245) takes only its adapter's agents, and always pins (the CLI can't run a pool name).
+  if (pool.kind === "quota" && b.type === "cli") {
+    return { ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { backendId: b.id }, keepPoolName: false, ...(b.adapterType ? { adapterTypes: pool.adapterTypes ?? [b.adapterType] } : {}), ...quota };
+  }
   if (pool.kind === "quota") return { ...pool, api: b.type, prefix: backendPrefix(b), endpoint: { baseUrl: backendBaseUrl(b), backendId: b.id }, ...quota };
   const watched = (pool.watch ?? []).map((id) => backends.find((x) => x.id === id)).filter((x): x is Backend => Boolean(x));
   // A sticky pool also watches every engine it places tasks on.

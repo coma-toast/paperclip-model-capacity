@@ -304,7 +304,18 @@ export const BackendUsageTable = ({ rows, companyId, onRefreshed, onOpenEngine }
 const QUOTA_POLL_MS = 5 * 60_000;
 
 // Subscription plans (Claude, ChatGPT/Codex): each usage window as a percentage, in the same cards as the backends.
-export const SubscriptionUsage = ({ companyId }: { companyId: string | null }) => {
+// JD-1245: a window the plugin read itself (Claude Code run logs), with when that run was.
+export interface ExtraWindow {
+  provider: string;
+  label: string;
+  usedPercent: number | null;
+  resetsAt: string | null;
+  asOf?: string;
+  overage?: { status: string; inUse: boolean };
+}
+
+
+export const SubscriptionUsage = ({ companyId, extra = [] }: { companyId: string | null; extra?: ExtraWindow[] }) => {
   const [accounts, setAccounts] = useState<QuotaAccount[] | null>(null);
   useEffect(() => {
     if (!companyId) return;
@@ -320,14 +331,22 @@ export const SubscriptionUsage = ({ companyId }: { companyId: string | null }) =
       clearInterval(timer);
     };
   }, [companyId]);
-  if (!accounts?.length) return null;
-  const cards: UsageCardData[] = accounts.map((a) => ({
+  if (!accounts?.length && !extra.length) return null;
+  // Run-log windows join the provider's card (the same login), each saying how old its reading is.
+  const extraFor = (provider: string): UsageWindow[] => extra.filter((w) => w.provider === provider).map((w) => ({
+    label: w.label.replace(/ \(from Claude Code runs\)$/, ""), unit: "percent", used: w.usedPercent ?? undefined, limit: w.usedPercent === null ? undefined : 100,
+    resetAt: w.resetsAt ?? undefined, note: `as of ${w.asOf ? ago(w.asOf) : "?"} (last Claude run)${w.overage?.inUse ? " · on extra usage" : ""}`,
+  }));
+  const cards: UsageCardData[] = (accounts ?? []).map((a) => ({
     key: `${a.provider}:${a.accountLabel ?? ""}`, kind: "quota", name: a.accountLabel ?? a.provider, sub: a.provider,
     error: a.ok ? undefined : a.error ?? "Couldn't read this account's usage",
-    windows: a.windows.filter((w) => w.usedPercent !== null).map((w) => ({
+    windows: [...a.windows.filter((w) => w.usedPercent !== null).map((w): UsageWindow => ({
       label: w.label, unit: "percent", used: w.usedPercent ?? undefined, limit: 100, resetAt: w.resetsAt ?? undefined, note: w.detail ?? undefined,
-    })),
+    })), ...(a.ok ? extraFor(a.provider) : [])],
   }));
+  for (const provider of new Set(extra.map((w) => w.provider))) {
+    if (!cards.some((c) => c.sub === provider && c.windows.length)) cards.push({ key: `${provider}:runs`, kind: "quota", name: "Claude (from runs)", sub: provider, windows: extraFor(provider) });
+  }
   return <KindSection kind="subscriptions" cards={cards} />;
 };
 
@@ -366,4 +385,30 @@ export const PausedModels = ({ paused }: { paused: PausedModel[] }) => {
       ))}
     </div>
   );
+};
+
+// JD-1245: a terminal-CLI pool (agy, ...): the CLI reports no usage, so the card shows what the plugin knows.
+export interface CliPoolRow {
+  poolId: string;
+  name: string;
+  adapterType?: string;
+  limit: number;
+  runsNow: number;
+  runsToday: number;
+  paused: { model: string; reason: string; since: string; until?: string }[];
+  cli?: { ok: boolean; models: number; sampledAt: string; error?: string };
+}
+
+export const CliPoolUsage = ({ pools = [] }: { pools?: CliPoolRow[] }) => {
+  if (!pools.length) return null;
+  const cards: UsageCardData[] = pools.map((p) => ({
+    key: `cli:${p.poolId}`, kind: "quota", name: p.name, sub: p.adapterType ?? "terminal CLI",
+    error: p.cli && !p.cli.ok ? p.cli.error ?? "The CLI lists no models" : undefined,
+    windows: [
+      { label: "Runs now", unit: "requests", used: p.runsNow, limit: p.limit, remaining: Math.max(0, p.limit - p.runsNow) },
+      { label: "Runs today", unit: "requests", used: p.runsToday, note: "quota is learned from failed runs (the CLI reports no usage)" },
+      ...p.paused.map((m): UsageWindow => ({ label: `${m.model} paused`, unit: "requests", note: `${m.reason}${m.until ? ` · until ${new Date(m.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}` })),
+    ],
+  }));
+  return <KindSection kind="subscriptions" cards={cards} />;
 };

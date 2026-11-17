@@ -67,6 +67,7 @@ const manifest: PaperclipPluginManifestV1 = {
       alertIssueId: { type: "string", title: "Alert task", description: "Unassigned standing task that gets alert comments (optional)." },
       quotaToken: { format: "secret-ref", title: "Board token for subscription quotas", description: "Optional. Lets the plugin read this company's Claude and ChatGPT subscription windows (board-only in Paperclip), so a subscription pool pauses when a window reaches 100%, and switch agents between Claude Code and Codex in a switching pool." },
       paperclipUrl: { type: "string", title: "Paperclip address", description: "Where the plugin reaches Paperclip's API with the board token. Paperclip blocks plugin requests to private addresses such as [IPV4_REDACTED], so use its tailnet or public address (e.g. https://paperclip.example.ts.net)." },
+      runLogsDir: { type: "string", title: "Run logs folder", description: "Optional. Where Paperclip keeps run logs on its host (default ~/.paperclip/instances/default/data/run-logs). The plugin reads Claude's 5-hour and weekly usage from Claude Code's runs there, since Paperclip can't read them for a setup token." },
       metricsToken: { type: "string", title: "Metrics bearer token", description: "Optional. Bearer token required to scrape the /metrics Prometheus endpoint." },
       ...backendsConfigSchema,
     },

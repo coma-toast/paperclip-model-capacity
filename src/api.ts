@@ -1,6 +1,9 @@
 import type { Agent, PluginContext } from "@paperclipai/plugin-sdk";
 
+import { readAdapterModels } from "./adapterModels.js";
+import { RUN_LOG_LABEL } from "./runLogWindows.js";
 import { collectAgentModels } from "./agentModels.js";
+import { quotaTokenFor } from "./subscriptions.js";
 import { alertKey } from "./alerts.js";
 import { APIS, addPrefix, apiInfo, inferApi, stripPrefix, type ApiKind } from "./apis.js";
 import { backendBaseUrl, backendForModel, backendPrefix, probeBaseUrl, readBackends, summarizeBackends, type Backend } from "./backends.js";
@@ -220,8 +223,36 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
         return { model, poolId: pool?.id, poolName: pool?.name, until: e.until, since: e.since, reason: e.reason };
       }),
       lastCycleAt: runtime.health().lastCycleAt, lastError: runtime.health().lastError, diagnostics: snapshot.diagnostics,
+      ...(companyId ? await subscriptionExtras(companyId, snapshot) : {}),
     };
   });
+
+  // JD-1245: what the widget adds to Paperclip's own subscription cards. Claude's 5-hour and weekly windows from Claude
+  // Code's run logs (with when that run was), and per terminal-CLI pool what can be known without a usage API: runs now
+  // and today, paused models with why and until when, and whether the CLI lists its models.
+  const subscriptionExtras = async (companyId: string, snapshot: Snapshot) => {
+    const sample = await store.subscriptionWindows(companyId).get();
+    const runLogWindows = (sample?.accounts ?? []).flatMap((a) => a.windows.filter((w) => w.label.includes(RUN_LOG_LABEL)).map((w) => ({ ...w, provider: a.provider })));
+    const tally = await store.runCounts(companyId).get();
+    const today = now().toISOString().slice(0, 10) === tally.day;
+    const adapters = await store.adapterModels(companyId).get();
+    const cliPools = snapshot.pools.filter((p) => p.companyId === companyId && p.api === "cli").map((p) => {
+      const models = (p.placement ?? []).map((t) => t.model);
+      const adapterType = p.adapterTypes?.[0];
+      const listing = adapterType ? adapters[adapterType] : undefined;
+      return {
+        poolId: p.id, name: p.name, adapterType, limit: p.limit,
+        runsNow: snapshot.runs.filter((r) => r.poolId === p.id && r.status === "running").length,
+        runsToday: today ? models.reduce((n, m) => n + (tally.counts[m] ?? 0), 0) : 0,
+        paused: models.flatMap((m) => {
+          const e = snapshot.exhausted?.[`${companyId}|${m}`];
+          return e ? [{ model: m, reason: e.reason, since: e.since, until: e.until }] : [];
+        }),
+        cli: listing ? { ok: listing.ok, models: listing.models.length, sampledAt: listing.sampledAt, error: listing.error } : undefined,
+      };
+    });
+    return { runLogWindows, cliPools };
+  };
 
   // One pool's usage and limits: its backend's meters and notes, and per model (quota) or engine (engine pool) the
   // price, limits, runs now and today, and whether it's paused and until when.
@@ -454,6 +485,15 @@ export const registerApi = (ctx: PluginContext, runtime: Runtime, now: () => Dat
     if (!companyId) return { ok: false, error: "Open this from a company's settings" };
     const backend = await savedBackend(companyId, params.backendId);
     if (!backend) return { ok: false, error: "Pick a backend for this pool first" };
+    // Terminal CLI (JD-1245): its adapter's model list, read from Paperclip with the board token.
+    if (backend.type === "cli") {
+      if (!backend.adapterType) return { ok: false, error: "Set the backend's adapter (e.g. agy_local) first" };
+      const auth = await quotaTokenFor(ctx, companyId).catch(() => undefined);
+      if (!auth) return { ok: false, error: "Save a board token in the plugin's settings first; Paperclip only shows an adapter's models to a board user" };
+      const list = await readAdapterModels(companyId, backend.adapterType, undefined, { fetch: (u, init) => ctx.http.fetch(u, init), baseUrl: auth.baseUrl, token: auth.token, now: new Date() });
+      if (!list.ok) return { ok: false, error: list.error ?? "No models" };
+      return { ok: true, source: `${backend.adapterType} on the Paperclip host`, models: [...list.models].sort(), prices: Object.fromEntries(list.models.map((m) => [m, { included: true }])) };
+    }
     // Direct to engines: the local engines' models, each with its engine's prefix.
     if (backend.type === "direct") {
       const engines = readBackends(await ctx.config.get(companyId)).filter((b) => apiInfo(b.type).group === "local");

@@ -6,9 +6,12 @@ import type { BackendUsageRow, PoolSummary } from "../api.js";
 import { AlertsDialog, EngineRunsDialog, PoolUsageDialog, WaitingDialog } from "./components/dialogs.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll, usedUpLabel } from "./components/shared.js";
 import { AlertBanner, PoolTiles, useNarrow } from "./components/poolTiles.js";
-import { BackendUsageTable, PausedModels, SubscriptionUsage, type PausedModel } from "./components/usage.js";
+import { BackendUsageTable, CliPoolUsage, PausedModels, SubscriptionUsage, type CliPoolRow, type ExtraWindow, type PausedModel } from "./components/usage.js";
 
 interface Summary {
+  // JD-1245: Claude windows from run logs, and terminal-CLI pools.
+  runLogWindows?: ExtraWindow[];
+  cliPools?: CliPoolRow[];
   pools: PoolSummary[];
   backends?: BackendUsageRow[];
   lastCycleAt?: string;
@@ -84,7 +87,8 @@ export const DashboardWidget = ({ context }: PluginWidgetProps) => {
       <PausedModels paused={data.paused ?? []} />
       <BackendUsageTable rows={data.backends ?? []} companyId={context.companyId} onRefreshed={refresh} onOpenEngine={(r) => setEngineId(r.id)} />
       {engine ? <EngineRunsDialog row={engine} companyId={context.companyId!} companyPrefix={context.companyPrefix} onClose={() => setEngineId(null)} onChanged={refresh} /> : null}
-      <SubscriptionUsage companyId={context.companyId} />
+      <SubscriptionUsage companyId={context.companyId} extra={data.runLogWindows} />
+      <CliPoolUsage pools={data.cliPools} />
       {openPool && open?.kind === "waiting" ? (
         <WaitingDialog companyId={context.companyId!} companyPrefix={context.companyPrefix} pool={openPool} pools={data.pools} onClose={() => setOpen(null)} onChanged={refresh} />
       ) : null}
