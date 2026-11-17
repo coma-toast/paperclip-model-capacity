@@ -224,7 +224,7 @@ export const WaitingDialog = ({ companyId, companyPrefix, pool, pools, onClose, 
 const KIND_LABEL: Record<AlertRow["kind"], string> = {
   waitedTooLong: "Waiting too long", overLimit: "Over the limit", hostDown: "Engine down", hostUp: "Engine back",
   quotaExhausted: "Quota used up", overrideRestoreFailed: "Model not restored", pluginError: "Plugin error",
-  needsPerson: "Needs a person",
+  needsPerson: "Needs a person", agentCannotRun: "Agent can't use model",
 };
 const DISMISSABLE = new Set<AlertRow["kind"]>(["overrideRestoreFailed", "pluginError", "hostUp"]);
 

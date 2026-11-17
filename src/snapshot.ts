@@ -1,15 +1,16 @@
 import type { Agent, Company, Issue, PluginContext } from "@paperclipai/plugin-sdk";
 
-import { AGENT_CACHE_TTL_MS, OPEN_TASK_STATUSES, PARK_EXPIRY_MS, PRIORITY_RANK, STALLED_QUEUED_MS, virtualModel } from "./constants.js";
+import { AGENT_CACHE_TTL_MS, DEFAULT_PAUSE_AT_PERCENT, OPEN_TASK_STATUSES, PARK_EXPIRY_MS, PRIORITY_RANK, STALLED_QUEUED_MS, virtualModel } from "./constants.js";
 import { loadHeldPoolKeys, loadScopedPools, type BackendsFor } from "./pools.js";
 import { stripPrefix } from "./apis.js";
 import { backendPrefix } from "./backends.js";
 import { matchPool } from "./scheduler/match.js";
-import { agentModel, effectiveModel, isPinned, modelProvider } from "./scheduler/model.js";
+import { adapterDown } from "./adapterModels.js";
+import { agentModel, cannotRunKey, effectiveModel, isPinned, modelProvider, poolAcceptsAdapter } from "./scheduler/model.js";
 import type { RunCounts, Store } from "./state/store.js";
 import { subscriptionExhausted, subscriptionLeft } from "./subscriptions.js";
 import { upstreamQuota } from "./upstream.js";
-import type { ExhaustedModel, OpenTask, PoolAgent, PoolConfig, RunningRun, Snapshot, TaskPriority } from "./types.js";
+import type { CannotRun, ExhaustedModel, OpenTask, PoolAgent, PoolConfig, RunningRun, Snapshot, TaskPriority } from "./types.js";
 
 export const PAGE_SIZE = 200;
 
@@ -42,11 +43,15 @@ export interface FailureRow {
   issue_id: string | null;
   error: string | null;
   finished_at: string | Date | null;
+  // The adapter's own classification, e.g. agy_local's "agy_quota_exhausted" (JD-1245).
+  error_code?: string | null;
 }
 export type FailureReader = () => Promise<FailureRow[] | undefined>;
 export const FAILURES_SQL =
-  "SELECT company_id, agent_id, COALESCE(issue_id::text, context_snapshot->>'issueId') AS issue_id, error, finished_at " +
-  "FROM public.heartbeat_runs WHERE status = 'failed' AND error_code = 'adapter_failed' AND finished_at > now() - interval '30 minutes'";
+  "SELECT company_id, agent_id, COALESCE(issue_id::text, context_snapshot->>'issueId') AS issue_id, error, finished_at, error_code " +
+  // Every failed run with an error (JD-1245): CLI adapters classify their own failures (agy_local: agy_quota_exhausted),
+  // and a model an agent's key can't use fails under other codes too. The error text decides what each one means.
+  "FROM public.heartbeat_runs WHERE status = 'failed' AND error IS NOT NULL AND finished_at > now() - interval '30 minutes'";
 export const dbFailureReader = (ctx: PluginContext): FailureReader => async () => {
   try {
     return await ctx.db.query<FailureRow>(FAILURES_SQL);
@@ -78,8 +83,14 @@ export const dbIdleReader = (ctx: PluginContext): IdleReader => async (issueIds)
   }
 };
 
-const RATE_LIMITED = /\b429\b|rate.?limit|too many requests|quota|usage.?limit|limit reached|insufficient.?(credit|balance|funds)|out of credits|FreeUsageLimit/i;
+const RATE_LIMITED = /\b429\b|rate.?limit|too many requests|quota|usage.?limit|limit reached|insufficient.?(credit|balance|funds)|out of credits|FreeUsageLimit|resource.?exhausted/i;
 export const RATE_LIMIT_FAILURES = 2;
+// A failure that's about quota by the adapter's own code, whatever its text (JD-1245).
+const QUOTA_CODE = /quota|rate_?limit/i;
+export const isRateLimited = (f: Pick<FailureRow, "error" | "error_code">) => Boolean((f.error && RATE_LIMITED.test(f.error)) || (f.error_code && QUOTA_CODE.test(f.error_code)));
+// The agent can't use the model at all (its key has no access, or the name is wrong): retrying never helps (JD-1245).
+export const CANNOT_RUN = /not available for (?:this|your) (?:api )?key|model name is invalid|invalid model|model[^.\n]{0,80}\b(?:not found|does not exist|is not supported)|no access to (?:the )?model|not allowed to access model|team not allowed to access model|key not allowed to access model/i;
+export const CANNOT_RUN_MS = 24 * 3600_000;
 const DAILY_LIMIT = /per.?day|daily|requests? a day|free-models-per-day|RPD\b/i;
 
 export const nextMidnightUtc = (now: Date) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
@@ -316,13 +327,21 @@ const exhaustedModels = async (input: {
       if (m) current[`${pool.companyId}|${t.model}`] = { until: m.resetAt, reason: `${m.label} used up` };
     }
   }
-  // A subscription pool pauses while every account of its provider has a window at 100 % (read with the board token).
+  // A terminal-CLI pool (JD-1245) pauses its models while the CLI's adapter keeps listing nothing (not signed in).
+  for (const pool of pools.filter((p) => p.kind === "quota" && p.companyId && p.api === "cli" && p.adapterTypes?.length)) {
+    const samples = await store.adapterModels(pool.companyId!).get();
+    const down = pool.adapterTypes!.map((t) => [t, samples[t]] as const).find(([, s]) => adapterDown(s));
+    if (!down) continue;
+    for (const t of pool.placement ?? []) current[`${pool.companyId}|${t.model}`] ??= { reason: `${down[0]} unavailable: ${down[1]?.error ?? "no models"}` };
+  }
+  // A subscription pool pauses while every account of its provider has a window at its pauseAtPercent (default
+  // DEFAULT_PAUSE_AT_PERCENT; read with the board token, or from Claude Code's run logs). Extra usage pauses at 100 %.
   // A pool on both subscriptions pauses each model with its own provider.
   for (const pool of pools.filter((p) => p.kind === "quota" && p.companyId && p.subscription && !p.allowOverQuota)) {
     const windows = (await store.subscriptionWindows(pool.companyId!).get()) ?? undefined;
     for (const t of pool.placement ?? []) {
       const provider = pool.subscription === "both" ? modelProvider(t.model) : pool.subscription;
-      const used = provider ? subscriptionExhausted(windows, provider, now, { model: t.model, overQuota: pool.overQuotaModels?.includes(t.model) }) : undefined;
+      const used = provider ? subscriptionExhausted(windows, provider, now, { model: t.model, overQuota: pool.overQuotaModels?.includes(t.model), atPercent: pool.pauseAtPercent ?? DEFAULT_PAUSE_AT_PERCENT }) : undefined;
       const key = `${pool.companyId}|${t.model}`;
       if (used && !current[key]) current[key] = used;
     }
@@ -342,7 +361,7 @@ const exhaustedModels = async (input: {
   // A failure that names its reset (a daily limit, a reset time) pauses the model until then on its own.
   const named = new Map<string, string>();
   for (const f of failures ?? []) {
-    if (!f.error || !RATE_LIMITED.test(f.error)) continue;
+    if (!isRateLimited(f)) continue;
     const agent = agentsByCompany.get(f.company_id)?.get(f.agent_id);
     if (!agent) continue;
     const issue = f.issue_id ? issuesById.get(f.issue_id) : undefined;
@@ -350,7 +369,7 @@ const exhaustedModels = async (input: {
     const at = f.finished_at ? Date.parse(new Date(f.finished_at).toISOString()) : NaN;
     if (!model || Number.isNaN(at)) continue;
     const key = `${f.company_id}|${model}`;
-    const reset = resetFromError(f.error, new Date(at));
+    const reset = f.error ? resetFromError(f.error, new Date(at)) : undefined;
     if (reset && Date.parse(reset) > now.getTime() && (!named.has(key) || reset > named.get(key)!)) named.set(key, reset);
     if (now.getTime() - at > RATE_LIMIT_WINDOW_MS) continue;
     recent.set(key, [...(recent.get(key) ?? []), at]);
@@ -370,6 +389,46 @@ const exhaustedModels = async (input: {
   const next: Record<string, ExhaustedModel> = Object.fromEntries(Object.entries(current).map(([key, v]) => [key, { since: before[key]?.since ?? now.toISOString(), ...v }]));
   if (JSON.stringify(next) !== JSON.stringify(before)) await store.exhausted.set(next);
   return next;
+};
+
+// JD-1245: agent + model pairs whose runs failed because the agent can't use that model, kept CANNOT_RUN_MS from the
+// latest such failure. Saved, so a pair outlives the 30 minutes of failures read each cycle.
+const learnCannotRun = async (input: {
+  store: Store;
+  failures: FailureRow[] | undefined;
+  issuesById: Map<string, Issue>;
+  agentsByCompany: Map<string, Map<string, Agent>>;
+  now: Date;
+}): Promise<Record<string, CannotRun>> => {
+  const { store, failures, issuesById, agentsByCompany, now } = input;
+  const before = await store.cannotRun.get();
+  const next: Record<string, CannotRun> = Object.fromEntries(Object.entries(before).filter(([, c]) => Date.parse(c.until) > now.getTime()));
+  for (const f of failures ?? []) {
+    if (!f.error || !CANNOT_RUN.test(f.error)) continue;
+    const agent = agentsByCompany.get(f.company_id)?.get(f.agent_id);
+    if (!agent) continue;
+    const issue = f.issue_id ? issuesById.get(f.issue_id) : undefined;
+    const model = issue ? effectiveModel(issue, agent) : agentModel(agent);
+    const at = f.finished_at ? Date.parse(new Date(f.finished_at).toISOString()) : NaN;
+    if (!model || Number.isNaN(at)) continue;
+    const key = cannotRunKey(agent.id, model);
+    const until = new Date(at + CANNOT_RUN_MS).toISOString();
+    if (until <= (next[key]?.until ?? "")) continue;
+    next[key] = { companyId: f.company_id, agentId: agent.id, model, since: next[key]?.since ?? new Date(at).toISOString(), until, error: f.error.slice(0, 300) };
+  }
+  if (JSON.stringify(next) !== JSON.stringify(before)) await store.cannotRun.set(next);
+  return next;
+};
+
+// JD-1245: models each CLI adapter lists, across companies (the CLI runs on the one host), by adapter type.
+const adapterModelsOf = async (store: Store, pools: PoolConfig[]) => {
+  const out: Record<string, string[]> = {};
+  for (const companyId of new Set(pools.filter((p) => p.api === "cli" && p.companyId).map((p) => p.companyId!))) {
+    for (const [type, s] of Object.entries(await store.adapterModels(companyId).get())) {
+      if (s.models.length) out[type] = [...new Set([...(out[type] ?? []), ...s.models])];
+    }
+  }
+  return out;
 };
 
 export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures = dbFailureReader(ctx), readIdle = dbIdleReader(ctx), listCompanies, backendsFor, blockers = createBlockerCache(ctx), now = new Date() }: SnapshotDeps): Promise<Snapshot> => {
@@ -403,12 +462,14 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
   if (skippedCompanies.length) ctx.logger.debug("Model capacity skipped companies without plugin config", { companies: skippedCompanies });
 
   // A task or run only ever counts against its own company's pools.
-  const poolOf = (companyId: string, model: string | undefined, issueId?: string): PoolConfig | undefined => {
+  // A pool with adapterTypes only takes those adapters' agents (JD-1245): agy also offers Claude names, which mustn't
+  // land in a Claude Code pool, nor a Claude Code agent's task in the agy pool.
+  const poolOf = (companyId: string, model: string | undefined, issueId?: string, adapterType?: string): PoolConfig | undefined => {
     // A task the plugin placed stays in the pool that placed it while it's on that model, even when another pool lists
     // the same model (a pool across subscriptions listing Haiku, next to a Haiku-only pool).
     const record = issueId ? overrides[issueId] : undefined;
     const placedBy = record && record.model === model ? pools.find((p) => p.id === record.toPoolId && p.companyId === companyId) : undefined;
-    return placedBy ?? matchPool(model, pools.filter((p) => p.companyId === companyId));
+    return placedBy ?? matchPool(model, pools.filter((p) => p.companyId === companyId && poolAcceptsAdapter(p, adapterType)));
   };
   const dbRows = await readRuns();
   const rows = dbRows ?? activeRunRows([...issuesById.values()]);
@@ -422,7 +483,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
     const model = issue ? effectiveModel(issue, agent) : agentModel(agent);
     runs.push({
       runId: row.id, issueId: row.issue_id ?? "", agentId: row.agent_id, companyId: row.company_id,
-      poolId: poolOf(row.company_id, model, issue?.id)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at), queuedAt: toIso(row.created_at),
+      poolId: poolOf(row.company_id, model, issue?.id, agent.adapterType)?.id, model, status: row.status as RunningRun["status"], startedAt: toIso(row.started_at), queuedAt: toIso(row.created_at),
       agentName: agent.name, issueIdentifier: issue?.identifier ?? undefined, issueTitle: issue?.title ?? undefined,
       ...(issue?.description ? { issueDescription: issue.description.slice(0, RUN_DESCRIPTION_CHARS) } : {}),
     });
@@ -449,7 +510,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
     // release, fail to start and hold again every cycle.
     if (!agent || NOT_RUNNABLE_AGENT.has(String(agent.status))) continue;
     const model = effectiveModel(issue, agent);
-    const pool = poolOf(issue.companyId, model, issue.id);
+    const pool = poolOf(issue.companyId, model, issue.id, agent.adapterType);
     if (!pool) continue;
     // A task waiting on its own unfinished blockers can't run, so it neither queues nor takes a slot. Our queue blocker
     // doesn't count.
@@ -472,6 +533,8 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
   const idle = new Set((await readIdle(candidates.map((t) => t.issueId))) ?? []);
   for (const t of candidates) if (idle.has(t.issueId)) t.idle = true;
 
+  // Failed runs feed paused models (quota pools) and learned can't-run pairs (any pool that places tasks).
+  const failures = pools.some((p) => p.kind === "quota" || p.placement?.length) ? await readFailures().catch(() => undefined) : undefined;
   return {
     now: now.toISOString(), pools, hosts, runs, tasks, holds: Object.values(holds), released: Object.values(released),
     wakeCooldown: Object.fromEntries(Object.entries(await store.wakeCooldown.get()).filter(([, until]) => Date.parse(until) > now.getTime())),
@@ -483,10 +546,9 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
     subscriptionLeft: await subscriptionLeftOf(store, pools, now),
     // Placements are the plugin's own overrides within one pool (overflow ones move a task between pools).
     placements: Object.fromEntries(Object.values(overrides).filter((o) => o.fromPoolId === o.toPoolId).map((o) => [o.issueId, o.model])),
-    // Failures are only read when a quota pool can use them.
-    exhausted: await exhaustedModels({
-      store, pools, backendsFor, failures: pools.some((p) => p.kind === "quota") ? await readFailures().catch(() => undefined) : undefined, issuesById, agentsByCompany, now,
-    }),
+    exhausted: await exhaustedModels({ store, pools, backendsFor, failures, issuesById, agentsByCompany, now }),
+    adapterModels: await adapterModelsOf(store, pools),
+    cannotRun: await learnCannotRun({ store, failures, issuesById, agentsByCompany, now }),
     diagnostics: {
       runSource: dbRows ? "heartbeat_runs" : "activeRun", activeRunRows: rows.filter((r) => ACTIVE.has(r.status)).length,
       unmatchedRunModels: [...new Set(runs.filter((r) => !r.poolId).map((r) => r.model ?? "(none)"))].slice(0, 20),

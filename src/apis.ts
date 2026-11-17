@@ -2,12 +2,13 @@ import type { EngineKind } from "./types.js";
 
 // A pool belongs to one model API, the logical boundary between pools. Agents name a model by the API it goes
 // through, usually with a prefix (e.g. "openrouter/…", "ollama/…"), so each pool keeps that API's prefix.
-export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "copilot" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "direct" | "other";
+export type ApiKind = "litellm" | "openai" | "opencode" | "openrouter" | "copilot" | "ollama" | "lmstudio" | "omlx" | "vllm" | "llamacpp" | "direct" | "cli" | "other";
 
 // gateway: routes to backends the pool can watch. cloud: nothing to watch. local: the endpoint is itself the model
 // server, checked directly. names: only model names, no endpoint.
 // "virtual": no endpoint of its own; a pool on it reaches its engines directly.
-export type ApiGroup = "gateway" | "virtual" | "cloud" | "local" | "names";
+// "cli": a terminal CLI an agent adapter runs on the Paperclip host (agy, ...), signed in to a subscription; no endpoint.
+export type ApiGroup = "gateway" | "virtual" | "cloud" | "local" | "names" | "cli";
 
 export interface ApiInfo {
   kind: ApiKind;
@@ -20,7 +21,7 @@ export interface ApiInfo {
   placeholderUrl: string;
   // How "Load models" lists models: OpenAI-style /v1/models, Ollama's /api/tags, the models.dev catalogue (for
   // services whose model list needs a login the plugin doesn't have), or not at all.
-  listing: "openai" | "ollama" | "catalog" | "none";
+  listing: "openai" | "ollama" | "catalog" | "adapter" | "none";
   // listing "catalog": the service's provider id in the models.dev catalogue.
   catalog?: string;
   // For local engines: which health check the endpoint gets.
@@ -40,6 +41,7 @@ export const APIS: readonly ApiInfo[] = [
   { kind: "vllm", label: "vLLM", group: "local", defaultPrefix: "vllm/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8000", listing: "openai", engine: "vllm", hint: "A local vLLM server, checked directly." },
   { kind: "llamacpp", label: "llama.cpp server", group: "local", defaultPrefix: "llamacpp/", defaultBaseUrl: "", placeholderUrl: "http://localhost:8080", listing: "openai", engine: "llamacpp", hint: "A local llama.cpp server, checked directly (slots included)." },
   { kind: "direct", label: "Direct to engines (no proxy)", group: "virtual", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "none", hint: "For setups without a proxy: a pool on it reaches the local engines directly. Its models are the engines' models, each with that engine's prefix." },
+  { kind: "cli", label: "Terminal CLI (agent adapter)", group: "cli", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "adapter", hint: "A CLI an agent adapter runs on the Paperclip host with its own subscription login, e.g. agy (Antigravity) for Gemini. Models come from the adapter's list; quota is learned from failed runs, since the CLI reports no usage." },
   { kind: "other", label: "Other (names only)", group: "names", defaultPrefix: "", defaultBaseUrl: "", placeholderUrl: "", listing: "none", hint: "Model names written in full, with no endpoint to ask or check." },
 ];
 
@@ -77,4 +79,4 @@ export const backendFromConnection = (c: AiConnectionLike): { type: ApiKind; bas
 // Backends that front other engines: a pool on one can watch engines and pin tasks to them.
 export const frontsEngines = (kind: ApiKind | undefined) => ["gateway", "virtual"].includes(apiInfo(kind).group);
 // Backends with an endpoint of their own (address, key, connection test).
-export const hasEndpoint = (kind: ApiKind | undefined) => !["names", "virtual"].includes(apiInfo(kind).group);
+export const hasEndpoint = (kind: ApiKind | undefined) => !["names", "virtual", "cli"].includes(apiInfo(kind).group);

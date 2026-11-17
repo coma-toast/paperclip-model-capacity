@@ -44,3 +44,26 @@ export const canRun = (adapterType: string | undefined, model: string) => {
   const only = adapterType ? ADAPTER_PROVIDER[adapterType] : undefined;
   return !only || modelProvider(model) === only;
 };
+
+// What else limits which models an agent can run, beyond the adapter family (JD-1245):
+// - adapterModels: the models a CLI adapter (agy_local, ...) reports it can run on this host, by adapter type. An adapter
+//   listed here runs only those.
+// - cannotRun: "<agentId>|<model>" pairs learned from failed runs ("not available for this API key"), until they expire.
+export interface RunLimits {
+  adapterModels?: Readonly<Record<string, readonly string[]>>;
+  cannotRun?: Readonly<Record<string, unknown>>;
+}
+
+export const cannotRunKey = (agentId: string, model: string) => `${agentId}|${model}`;
+
+// Whether a pool takes tasks of this adapter at all: a pool with adapterTypes takes only those agents' tasks.
+export const poolAcceptsAdapter = (pool: { adapterTypes?: string[] }, adapterType: string | undefined) =>
+  !pool.adapterTypes?.length || (adapterType !== undefined && pool.adapterTypes.includes(adapterType));
+
+export const canAgentRun = (agent: { agentId?: string; adapterType?: string }, model: string, limits: RunLimits = {}) => {
+  const { adapterType, agentId } = agent;
+  // A CLI adapter's own model list decides for it (agy also offers Claude names, which canRun would read as anthropic).
+  const listed = adapterType ? limits.adapterModels?.[adapterType] : undefined;
+  if (listed ? !listed.includes(model) : !canRun(adapterType, model)) return false;
+  return !(agentId && limits.cannotRun?.[cannotRunKey(agentId, model)]);
+};

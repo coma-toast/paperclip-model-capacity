@@ -86,6 +86,11 @@ export interface PoolConfig {
   // and releases them. For agents whose runtime resolves the pool name itself (OpenCode through LiteLLM, which has a
   // model named after the pool). Claude Code and Codex can't run a pool name, so their pools must keep pinning.
   keepPoolName?: boolean;
+  // JD-1245: only tasks of agents on these adapters belong to the pool (a CLI pool sets it from its backend). Unset: any.
+  adapterTypes?: string[];
+  // JD-1245: subscription pools stop placing new tasks on a model once a window that limits it reaches this share
+  // (0-100). Runs already going finish; models allowed on extra usage are limited only by the extra-usage pool.
+  pauseAtPercent?: number;
   // The model agents point at to use this pool instead of a specific model (one of the pool's models; for a sticky
   // pool, an entry model, so the pool picks the engine). It must work on its own too, for runs that have no task.
   agentModel?: string;
@@ -260,6 +265,12 @@ export interface Snapshot {
   poolAgents?: PoolAgent[];
   // Each subscription's quota left (0-100, the best account's tightest window), keyed by company, for switching pools.
   subscriptionLeft?: Record<string, Partial<Record<"anthropic" | "openai", number>>>;
+  // JD-1245: models each CLI adapter (agy_local, ...) can run on this host, by adapter type (from Paperclip's adapter
+  // model list). An adapter missing here isn't limited by a list.
+  adapterModels?: Record<string, string[]>;
+  // JD-1245: agent + model pairs ("<agentId>|<model>") whose runs failed because the agent can't use that model (its key
+  // has no access), until they expire.
+  cannotRun?: Record<string, CannotRun>;
   // How the snapshot was built, for the operator (not used by decide()).
   diagnostics?: SnapshotDiagnostics;
 }
@@ -269,6 +280,15 @@ export interface PoolAgent {
   companyId: string;
   model: string;
   adapterType?: string;
+}
+
+export interface CannotRun {
+  companyId: string;
+  agentId: string;
+  model: string;
+  since: string;
+  until: string;
+  error: string;
 }
 
 export interface ExhaustedModel {
@@ -293,6 +313,7 @@ export type AlertKind =
   | "overLimit"
   | "overrideRestoreFailed"
   | "quotaExhausted"
+  | "agentCannotRun"
   | "pluginError";
 
 export interface AlertEvent {
@@ -307,7 +328,8 @@ export interface AlertEvent {
 }
 
 // Why a task was put on an engine: first placement, its parent's engine, or its own engine was down too long.
-export type PlaceReason = "new" | "parent" | "engineDown" | "fallback";
+// "agentCannotRun": its agent turned out unable to run the model it was placed on (JD-1245).
+export type PlaceReason = "new" | "parent" | "engineDown" | "fallback" | "agentCannotRun";
 
 export type Action =
   | { kind: "hold"; issueId: string; companyId: string; poolId: string; position: number }

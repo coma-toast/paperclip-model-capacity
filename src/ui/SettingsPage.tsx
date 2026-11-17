@@ -217,6 +217,7 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
         ...(address ? { baseUrl: address } : {}),
         prefix: (draft.prefix ?? info.defaultPrefix).trim(),
         ...(info.group === "local" ? { slots: draft.slots ?? 1 } : {}),
+        ...(info.group === "cli" ? { adapterType: (draft.adapterType ?? "agy_local").trim(), concurrency: draft.concurrency ?? 1 } : {}),
         ...(info.group === "local" && draft.reachVia ? { reachVia: draft.reachVia, ...(draft.reachModel ? { reachModel: draft.reachModel } : {}) } : {}),
         ...(advanced && draft.header?.trim() ? { header: draft.header.trim() } : {}),
         ...(advanced && draft.scheme !== undefined ? { scheme: draft.scheme } : {}),
@@ -292,6 +293,16 @@ const BackendForm = ({ companyId, initial, taken, onClose, onSaved }: {
             </Field>
           ) : null}
         </div>
+        {info.group === "cli" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+            <Field label="Adapter" hint="The agent adapter that runs this CLI on the Paperclip host, e.g. agy_local. Its agents are the only ones placed on this backend's models.">
+              <input style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} value={draft.adapterType ?? "agy_local"} onChange={(e) => set({ adapterType: e.target.value })} />
+            </Field>
+            <Field label="Runs at once" hint="Runs its login takes at the same time">
+              <input style={inputStyle} type="number" min={1} value={draft.concurrency ?? 1} onChange={(e) => set({ concurrency: Number(e.target.value) })} />
+            </Field>
+          </div>
+        ) : null}
         {info.group === "local" ? (
           <Field label="Agents reach it" hint="Through a proxy (the model name is read from its routing after saving), or directly (the harness config gets a provider for this engine).">
             <select style={inputStyle} value={draft.reachVia ?? ""} onChange={(e) => set({ reachVia: e.target.value || undefined, reachModel: undefined })}>
