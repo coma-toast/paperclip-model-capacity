@@ -8,7 +8,7 @@ import type { AlertEvent } from "../types.js";
 import { Button, inputStyle } from "./components/form.js";
 import { EditPoolsLink, HostDots, PoolBadges, formatWait, usePoll } from "./components/shared.js";
 import { EngineRunsDialog } from "./components/dialogs.js";
-import { BackendUsageTable, SubscriptionUsage } from "./components/usage.js";
+import { BackendUsageTable, CliPoolUsage, SubscriptionUsage, type CliPoolRow, type ExtraWindow } from "./components/usage.js";
 
 type Result = { ok: boolean; error?: string; errors?: { field: string; message: string }[] };
 
@@ -24,7 +24,7 @@ const describe = (e: HistoryEntry) => {
 // H2: pools and hosts, the queue with controls, recent alerts and today's decisions.
 export const CapacityPage = ({ context }: PluginPageProps) => {
   const scope = { companyId: context.companyId };
-  const summary = usePluginData<{ pools: PoolSummary[]; backends?: BackendUsageRow[]; lastCycleAt?: string }>("capacity-summary", scope);
+  const summary = usePluginData<{ pools: PoolSummary[]; backends?: BackendUsageRow[]; lastCycleAt?: string; runLogWindows?: ExtraWindow[]; cliPools?: CliPoolRow[] }>("capacity-summary", scope);
   const queue = usePluginData<{ rows: QueueRow[] }>("queue", scope);
   const alerts = usePluginData<{ active: AlertEvent[]; recent: AlertEvent[] }>("alerts", scope);
   const history = usePluginData<{ entries: HistoryEntry[] }>("history", scope);
@@ -62,7 +62,8 @@ export const CapacityPage = ({ context }: PluginPageProps) => {
       </div>
       <BackendUsageTable rows={summary.data?.backends ?? []} companyId={context.companyId} onRefreshed={() => summary.refresh()} onOpenEngine={(r) => setEngineId(r.id)} />
       {engine ? <EngineRunsDialog row={engine} companyId={context.companyId!} companyPrefix={context.companyPrefix} onClose={() => setEngineId(null)} onChanged={() => summary.refresh()} /> : null}
-      <SubscriptionUsage companyId={context.companyId} />
+      <SubscriptionUsage companyId={context.companyId} extra={summary.data?.runLogWindows} />
+      <CliPoolUsage pools={summary.data?.cliPools} />
       {summary.data && pools.length === 0 ? <div>No pools for this company yet. <EditPoolsLink companyPrefix={context.companyPrefix} label="Set up pools" /></div> : null}
 
       <section>

@@ -21,6 +21,7 @@ import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { opencodeCopilotToken } from "./opencodeAuth.js";
 import { quotaTokenFor, readSubscriptionWindows } from "./subscriptions.js";
 import { readAdapterModels } from "./adapterModels.js";
+import { readRunLogWindows, withRunLogWindows } from "./runLogWindows.js";
 import { PAPERCLIP_SPEND_SQL, sampleUsage, type BackendUsage, type PaperclipSpend, type UsageDeps } from "./usage.js";
 
 const BILLED_CACHE_MS = 30 * 60_000;
@@ -316,10 +317,21 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
   };
   // Subscription pools: read the company's Claude/ChatGPT windows with the board token, when one is saved.
   const refreshSubscriptions = async (companyId: string) => {
-    if (!(await store.companyPools(companyId).get()).some((p) => p.subscription)) return;
+    const pools = await store.companyPools(companyId).get();
+    if (!pools.some((p) => p.subscription)) return;
     const auth = await quotaTokenFor(ctx, companyId).catch((e) => { ctx.logger.warn("Model capacity couldn't read the quota token", { companyId, error: errText(e) }); return undefined; });
-    if (!auth) return;
-    await store.subscriptionWindows(companyId).set(await readSubscriptionWindows(companyId, { fetch: (u, init) => ctx.http.fetch(u, init), baseUrl: auth.baseUrl, token: auth.token, now: now() }));
+    // JD-1245: Claude's 5-hour and weekly windows from Claude Code's run logs, which Paperclip can't read for a setup token.
+    const claude = pools.some((p) => p.subscription === "anthropic" || p.subscription === "both");
+    const runLogs = claude ? await readRunLogWindows(companyId, { dir: await runLogsDirFor(companyId), now: now() }).catch(() => undefined) : undefined;
+    if (!auth && !runLogs) return;
+    const sample = auth
+      ? await readSubscriptionWindows(companyId, { fetch: (u, init) => ctx.http.fetch(u, init), baseUrl: auth.baseUrl, token: auth.token, now: now() })
+      : { sampledAt: now().toISOString(), ok: false, error: "No board token saved", accounts: [] };
+    await store.subscriptionWindows(companyId).set(withRunLogWindows(sample, runLogs));
+  };
+  const runLogsDirFor = async (companyId: string) => {
+    const dir = (await ctx.config.get(companyId).catch(() => ({} as Record<string, unknown>))).runLogsDir;
+    return typeof dir === "string" && dir.trim() ? dir.trim() : undefined;
   };
   // Engine pools also count runs on other names a proxy routes only to one of their engines; keep that list fresh.
   const refreshEngineAliases = async (companyId: string) => {

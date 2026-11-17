@@ -1,6 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 import { getJson, type FetchFn } from "./probes/http.js";
+import { RUN_LOG_LABEL } from "./runLogWindows.js";
 
 // Paperclip tracks subscription usage windows (Claude's and ChatGPT/Codex's 5-hour and weekly limits) per provider
 // account, and only shows them to a signed-in board user. With a board token saved in the plugin's config, the worker
@@ -11,6 +12,9 @@ export interface SubscriptionWindow {
   label: string;
   usedPercent: number | null;
   resetsAt: string | null;
+  // JD-1245: windows read from Claude Code run logs carry when that run was, and Claude's extra-usage state.
+  asOf?: string;
+  overage?: { status: string; inUse: boolean };
 }
 
 export interface SubscriptionAccount {
@@ -18,6 +22,7 @@ export interface SubscriptionAccount {
   accountLabel?: string;
   ok: boolean;
   windows: SubscriptionWindow[];
+  error?: string;
 }
 
 export interface SubscriptionSample {
@@ -48,7 +53,8 @@ const EXTRA_USAGE = /extra usage/i;
 export const windowFamily = (label: string) => {
   const m = /\(([^)]+)\)\s*$/.exec(label);
   const family = m?.[1].trim().toLowerCase();
-  return family && family !== "all models" ? family : undefined;
+  // "(from Claude Code runs)" says where the plugin read it (JD-1245), not which models it limits.
+  return family && family !== "all models" && family !== RUN_LOG_LABEL.toLowerCase() ? family : undefined;
 };
 // The windows that limit `model`: its family's and the shared ones. A model allowed to run on extra usage is limited
 // only by the extra-usage pool; the others ignore that pool.
