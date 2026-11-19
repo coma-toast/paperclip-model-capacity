@@ -525,6 +525,7 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
       model, adapterType: agent.adapterType, agentModel: agentModel(agent), ...(issue.parentId ? { parentId: issue.parentId } : {}),
       ...(issue.originKind === "routine_execution" && issue.originId ? { routineKey: `${issue.originId}|${issue.originFingerprint ?? ""}` } : {}),
       ...(issue.createdAt ? { createdAt: new Date(issue.createdAt).toISOString() } : {}),
+      ...(issue.executionBlocker ? { executionBlocker: issue.executionBlocker } : {}),
     });
   }
 

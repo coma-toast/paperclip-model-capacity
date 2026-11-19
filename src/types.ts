@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/plugin-sdk";
+import type { ExecutionBlocker } from "@paperclipai/shared";
 
 import type { ApiKind } from "./apis.js";
 
@@ -219,6 +220,8 @@ export interface OpenTask {
   // A routine's run of a task ("<routine id>|<fingerprint>") and when it was created, to spot stale copies.
   routineKey?: string;
   createdAt?: string;
+  // Execution blocker from the issue; if present and requiring reconciliation, the task needs a person instead of being queued.
+  executionBlocker?: ExecutionBlocker | null;
 }
 
 // An override the plugin wrote during overflow, kept so it can be restored exactly (D3) and told apart from a pin (D4).
@@ -309,6 +312,7 @@ export type AlertKind =
   | "hostDown"
   | "hostUp"
   | "waitedTooLong"
+  | "needsAttention"
   | "needsPerson"
   | "overLimit"
   | "overrideRestoreFailed"

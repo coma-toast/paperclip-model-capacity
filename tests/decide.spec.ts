@@ -247,3 +247,67 @@ describe("held tasks whose wake-up started no run (plain pools)", () => {
     expect(releases(decide(s))).toEqual(["second"]);
   });
 });
+
+describe("executionBlocker handling", () => {
+  const blockerReconciliation = { cause: "legacy_execution_requires_reconciliation", recoveryActionId: null, runId: null, agentId: null, nextAction: "" };
+  const blockerNoReconciliation = { cause: "some_other_cause", recoveryActionId: null, runId: null, agentId: null, nextAction: "" };
+
+  it("excludes tasks with executionBlocker requiring reconciliation from waiting list", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("blocked", { executionBlocker: blockerReconciliation }), task("t1")] }));
+    expect(holds(a)).toEqual([["t1", 1]]);
+    const alertKinds = kinds(a, "alert").map((x) => (x.kind === "alert" ? x.alert.kind : ""));
+    expect(alertKinds).toContain("needsAttention");
+  });
+
+  it("generates needsAttention alert for tasks with reconciliation blockers", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("t1", { executionBlocker: blockerReconciliation })] }));
+    const alerts = kinds(a, "alert").map((x) => (x.kind === "alert" ? [x.alert.kind, x.alert.subject] : []));
+    expect(alerts).toEqual([["needsAttention", "t1"]]);
+  });
+
+  it("ignores blockers with non-reconciliation causes", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("t1", { executionBlocker: blockerNoReconciliation })] }));
+    expect(holds(a)).toEqual([["t1", 1]]);
+    const alertKinds = kinds(a, "alert").map((x) => (x.kind === "alert" ? x.alert.kind : ""));
+    expect(alertKinds).not.toContain("needsAttention");
+    expect(alertKinds).toEqual([]);
+  });
+
+  it("handles mixed blocked and normal tasks correctly", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("blocked", { executionBlocker: blockerReconciliation }), task("normal"), task("other-blocker", { executionBlocker: blockerNoReconciliation })] }));
+    const holdsList = holds(a);
+    expect(holdsList).toContainEqual(["other-blocker", expect.any(Number)]);
+    expect(holdsList).not.toContainEqual(["blocked", expect.any(Number)]);
+    expect(holdsList).toContainEqual(["normal", expect.any(Number)]);
+    const alertKinds = kinds(a, "alert").map((x) => (x.kind === "alert" ? x.alert.kind : ""));
+    expect(alertKinds).toContain("needsAttention");
+  });
+
+  it("does not count reconciliation-blocked tasks in the queue", () => {
+    const s = snapshot({
+      pools: [pool("gpu", { limit: 1 })],
+      tasks: [
+        task("blocked", { executionBlocker: blockerReconciliation, status: "blocked" }),
+        task("normal", { status: "blocked" }),
+      ],
+      holds: [
+        heldTask("blocked", { heldAt: minutesAgo(30) }).hold,
+        heldTask("normal", { heldAt: minutesAgo(10) }).hold,
+      ],
+    });
+    const a = decide(s);
+    expect(releases(a)).toEqual(["normal"]);
+  });
+
+  it("skips exempt tasks from needsAttention alerts", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("blocked", { executionBlocker: blockerReconciliation, exempt: true })] }));
+    const alertKinds = kinds(a, "alert").map((x) => (x.kind === "alert" ? x.alert.kind : ""));
+    expect(alertKinds).not.toContain("needsAttention");
+  });
+
+  it("excludes executionBlocker tasks from fresh holds when pool is full", () => {
+    const a = decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("blocked", { executionBlocker: blockerReconciliation }), task("t1")] }));
+    const freshHolds = holds(a);
+    expect(freshHolds).toEqual([["t1", 1]]);
+  });
+});

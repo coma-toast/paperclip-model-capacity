@@ -1,4 +1,5 @@
 import { OPEN_TASK_STATUSES, PRIORITY_RANK, virtualModel } from "../constants.js";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canAgentRun, canRun, cannotRunKey, type RunLimits } from "./model.js";
 import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
@@ -295,8 +296,28 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     for (const t of tasks) {
       if (t.idle && !t.hasActiveRun && holdsByIssue.has(t.issueId)) actions.push({ kind: "release", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, reason: "idle" });
     }
-    const waiting = tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun && !t.idle && !snapshot.parked?.[t.issueId]);
+    // Tasks with executionBlocker requiring reconciliation need a person; others proceed normally.
+    const needsAttention: OpenTask[] = [];
+    const waiting = tasks.filter((t) => {
+      if (t.executionBlocker && requiresExecutionReconciliation(t.executionBlocker.cause)) {
+        needsAttention.push(t);
+        return false;
+      }
+      return OPEN.has(t.status) && !t.hasActiveRun && !t.idle && !snapshot.parked?.[t.issueId];
+    });
     const held: HeldTask[] = snapshot.holds.filter((h) => groupKey(pool, h.companyId) === key && h.poolId === pool.id);
+
+    // Tasks with executionBlocker requiring reconciliation need a person to reconcile them before they can run.
+    for (const t of needsAttention) {
+      if (isExempt(t)) continue;
+      actions.push({
+        kind: "alert",
+        alert: {
+          kind: "needsAttention", subject: t.issueId, state: "start", poolId: pool.id, companyId: t.companyId, at: snapshot.now,
+          message: `${t.issueId}: execution blocker present, needs reconciliation before it can run`,
+        },
+      });
+    }
 
     // B5: an exempt task never waits, so drop any hold it still has.
     for (const t of waiting) {
@@ -344,7 +365,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     // C1: once the pool is full (or held), every other open, non-exempt task without a run waits behind the queue.
     if (used >= available || paused) {
       const fresh = waiting
-        .filter((t) => !isExempt(t) && !holdsByIssue.has(t.issueId))
+        .filter((t) => !isExempt(t) && !holdsByIssue.has(t.issueId) && !(t.executionBlocker && requiresExecutionReconciliation(t.executionBlocker.cause)))
         .map((t) => ({ issueId: t.issueId, companyId: t.companyId, priority: t.priority, heldAt: snapshot.now }));
       const order = [...queue, ...fresh].sort(byQueueOrder);
       for (const entry of fresh) {

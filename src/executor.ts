@@ -1,4 +1,5 @@
 import type { Issue, PluginContext } from "@paperclipai/plugin-sdk";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 
 import { PARK_AFTER_FAILED_WAKES, RELEASE_EXPIRY_MS, WAKE_CONFIRM_MS, WAKE_COOLDOWN_MS } from "./constants.js";
 import { DRAIN_GRACE_MS } from "./drain.js";
@@ -111,6 +112,12 @@ export const createExecutor = ({ ctx, store, queueLabelId = async () => undefine
   };
 
   const wake = async (issueId: string, companyId: string) => {
+    const issue = await ctx.issues.get(issueId, companyId);
+    if (issue?.executionBlocker && requiresExecutionReconciliation(issue.executionBlocker.cause)) {
+      // Task has executionBlocker requiring reconciliation - skip wake
+      await ctx.logger.info(`Task has executionBlocker requiring reconciliation, skipping wake for ${issueId} in ${companyId}`, { issueId, companyId });
+      return undefined;
+    }
     const result = await ctx.issues.requestWakeup(issueId, companyId, { reason: "Model capacity: a slot is free" });
     return result.runId ?? undefined;
   };
