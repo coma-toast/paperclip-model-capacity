@@ -140,6 +140,38 @@ describe("pools across two subscriptions that switch agents' adapters", () => {
     expect(short(decide(at(50, 60)))).toEqual(["place t1 l/claude-haiku-5-5 new"]);
   });
 
+  describe("a Claude override left on a task after its agent moved to Codex", () => {
+    const codexAgents = [{ id: "a1", companyId: "c1", model: "pool/gpu", adapterType: "codex_local" }];
+    const stale = (over: Partial<ReturnType<typeof task>> = {}) =>
+      task("t1", { model: "claude-opus-5-5", agentModel: "pool/gpu", agentId: "a1", adapterType: "codex_local", ...over });
+    const tasksOf = (tasks: ReturnType<typeof task>[], extra: Partial<Parameters<typeof snapshot>[0]> = {}) =>
+      short(decide(snapshot({ pools: [cheap({ switchAdapters: true })], poolAgents: codexAgents, tasks, ...extra })));
+
+    it("re-places an idle task onto an OpenAI model", () => {
+      expect(tasksOf([stale({ idle: true })])).toEqual(["place t1 l/gpt-5.6-terra adapterChanged"]);
+    });
+
+    it("re-places a waiting task through the queue pass, and an exempt one too", () => {
+      expect(tasksOf([stale()])).toEqual(["place t1 l/gpt-5.6-terra new"]);
+      expect(tasksOf([stale({ exempt: true })])).toEqual(["place t1 l/gpt-5.6-terra adapterChanged"]);
+    });
+
+    it("leaves a person's pin, a task with a run, and a model the adapter can run alone", () => {
+      expect(tasksOf([stale({ pinned: true, idle: true })])).toEqual([]);
+      expect(tasksOf([stale({ hasActiveRun: true })])).toEqual([]);
+      expect(tasksOf([stale({ model: "gpt-5.6-terra", idle: true })])).toEqual([]);
+    });
+
+    it("moves the tasks of an agent that switches this cycle onto the new adapter's model, not the old one's", () => {
+      const claudeAgent = [{ id: "a1", companyId: "c1", model: "pool/gpu", adapterType: "claude_local" }];
+      const out = decide(snapshot({
+        pools: [cheap({ switchAdapters: true })], poolAgents: claudeAgent, exhausted: claudeOut,
+        tasks: [task("t1", { model: "claude-haiku-5-5", agentModel: "pool/gpu", agentId: "a1", adapterType: "claude_local", idle: true }), task("t2", { model: "pool/gpu", agentId: "a1", adapterType: "claude_local" })],
+      }));
+      expect(short(out)).toEqual(["switchAdapter", "place t1 l/gpt-5.6-terra adapterChanged", "hold t2"]);
+    });
+  });
+
   it("doesn't switch when switching is off, the agent is busy, it has nothing waiting, or the other side is used up too", () => {
     expect(short(decide(snapshot({ pools: [cheap()], poolAgents: agents, exhausted: claudeOut, tasks: [claudeTask] })))).toEqual(["hold t1"]);
     const busy = snapshot({ pools: [cheap({ switchAdapters: true })], poolAgents: agents, exhausted: claudeOut, runs: [run("x", { agentId: "a1", poolId: "elsewhere" })], tasks: [claudeTask] });
