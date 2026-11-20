@@ -1,4 +1,4 @@
-import { OPEN_TASK_STATUSES, PRIORITY_RANK, virtualModel } from "../constants.js";
+import { OPEN_TASK_STATUSES, PRIORITY_RANK, VIRTUAL_MODEL_PREFIX, virtualModel } from "../constants.js";
 import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canAgentRun, canRun, cannotRunKey, type RunLimits } from "./model.js";
 import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
@@ -69,6 +69,8 @@ const stickyActions = (input: {
   holdsByIssue: Map<string, HeldTask>;
   poolRoom: number;
   paused: boolean;
+  // Every open task of the pool without a run, whether or not it waits for a slot (idle, exempt and parked ones too).
+  open?: OpenTask[];
 }): Action[] => {
   const { pool, snapshot, now, waiting, holdsByIssue, paused } = input;
   const targets = pool.placement ?? [];
@@ -150,6 +152,25 @@ const stickyActions = (input: {
       });
       switching.add(a.id);
     }
+  }
+
+  // An agent's adapter changed: a model override the plugin put on its tasks for the old adapter (Claude on a Codex agent,
+  // or the reverse) would fail the next time a comment wakes the task, and the host wakes it without asking the plugin.
+  // So every open task of such an agent that isn't a person's pin is moved onto a model of the adapter it will have, now,
+  // whether or not it waits for a slot (placing only sets the override; it neither wakes nor holds the task). Tasks of an
+  // agent that is switching this cycle go to the new adapter's models at once instead of waiting a cycle.
+  const switchTo = new Map(out.flatMap((a) => (a.kind === "switchAdapter" ? [[a.agentId, a.toAdapterType] as const] : [])));
+  const waitingIds = new Set(waiting.map((t) => t.issueId));
+  for (const t of input.open ?? []) {
+    const adapterType = switchTo.get(t.agentId) ?? t.adapterType;
+    // Waiting tasks of an agent that isn't switching are re-placed by the queue pass below, with capacity counted.
+    if (waitingIds.has(t.issueId) && !switchTo.has(t.agentId)) continue;
+    // Only a plugin-written override (t.model differs from the agent's own, and isn't a pool's own name) that the adapter can't run, never a pin.
+    if (t.pinned || !t.model || t.model === t.agentModel || t.model.startsWith(VIRTUAL_MODEL_PREFIX) || canAgentRun({ agentId: t.agentId, adapterType }, t.model, limits)) continue;
+    const fitsNow = (x: PlacementTarget | undefined) => x !== undefined && canAgentRun({ agentId: t.agentId, adapterType }, x.model, limits);
+    const parentTarget = byModel.get(parentModel(t) ?? "");
+    const target = fitsNow(parentTarget) ? parentTarget : targets.find((x) => fitsNow(x) && !exhausted(x.model)) ?? targets.find((x) => fitsNow(x));
+    if (target) out.push({ kind: "place", issueId: t.issueId, companyId: t.companyId, poolId: pool.id, model: target.model, reason: "adapterChanged" });
   }
 
   // Out of quota for a task: every model its agent can run is used up (or on a down engine), and in a switching pool
@@ -316,6 +337,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     if (pool.placement?.length) {
       actions.push(...stickyActions({
         pool, snapshot, now, waiting: waiting.filter((t) => !isExempt(t)), holdsByIssue,
+        open: tasks.filter((t) => OPEN.has(t.status) && !t.hasActiveRun),
         poolRoom: Math.max(0, available - count), paused: heldPools.has(pool.id) || pool.disabled === true,
       }));
       actions.push(...waitAlerts(pool, queue, now, snapshot.now), ...parkedAlerts(pool, parkedTasks, snapshot));

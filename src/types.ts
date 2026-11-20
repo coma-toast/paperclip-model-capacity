@@ -329,7 +329,8 @@ export interface AlertEvent {
 
 // Why a task was put on an engine: first placement, its parent's engine, or its own engine was down too long.
 // "agentCannotRun": its agent turned out unable to run the model it was placed on (JD-1245).
-export type PlaceReason = "new" | "parent" | "engineDown" | "fallback" | "agentCannotRun";
+// "adapterChanged": its agent's adapter changed (or is changing) and the task's override is a model the new one can't run.
+export type PlaceReason = "new" | "parent" | "engineDown" | "fallback" | "agentCannotRun" | "adapterChanged";
 
 export type Action =
   | { kind: "hold"; issueId: string; companyId: string; poolId: string; position: number }
