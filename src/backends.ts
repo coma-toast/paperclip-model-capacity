@@ -34,6 +34,8 @@ export interface Backend {
   // Terminal CLI only (JD-1245): the Paperclip adapter that runs it (e.g. agy_local), and how many runs its login takes at
   // once (the default limit of a pool on it).
   adapterType?: string;
+  // Terminal CLI only (JD-1361): the command that runs it when not `agy` on the worker's PATH, e.g. an absolute path.
+  command?: string;
   concurrency?: number;
 }
 
@@ -122,6 +124,7 @@ export const backendsConfigSchema = {
         },
         prefix: { type: "string", title: "Model name prefix", description: "How agents start this backend's model names, e.g. litellm/. Empty uses the type's usual prefix." },
         adapterType: { type: "string", title: "Adapter", description: "Terminal CLI only: the agent adapter that runs it, e.g. agy_local." },
+        command: { type: "string", title: "Command", description: "Terminal CLI only: the executable the plugin runs to read its usage, e.g. /home/paperclip/.local/bin/agy. Empty uses agy on the worker's PATH." },
         concurrency: { type: "integer", title: "Runs at once", minimum: 1, default: 1, description: "Terminal CLI only: runs its login takes at the same time." },
         slots: { type: "integer", title: "Slots", minimum: 1, default: 1, description: "Local engines only: requests served at once when the server doesn't report it." },
         reachVia: { type: "string", title: "Reached via", description: "Local engines only: the proxy backend's id agents reach it through, or \"direct\"." },

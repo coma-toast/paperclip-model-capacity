@@ -8,6 +8,7 @@ import { matchPool } from "./scheduler/match.js";
 import { adapterDown } from "./adapterModels.js";
 import { agentModel, cannotRunKey, effectiveModel, isPinned, modelProvider, poolAcceptsAdapter } from "./scheduler/model.js";
 import type { RunCounts, Store } from "./state/store.js";
+import { agyExhausted } from "./agyUsage.js";
 import { subscriptionExhausted, subscriptionLeft } from "./subscriptions.js";
 import { upstreamQuota } from "./upstream.js";
 import type { CannotRun, ExhaustedModel, OpenTask, PoolAgent, PoolConfig, RunningRun, Snapshot, TaskPriority } from "./types.js";
@@ -321,7 +322,13 @@ const exhaustedModels = async (input: {
         current[`${pool.companyId}|${t.model}`] = { until: upstream.meter.resetAt, reason: `${upstream.meter.label} used up` };
         continue;
       }
-      const empty = (backendId ? usage[backendId]?.meters : undefined)?.filter((m) => m.limit !== undefined && (m.remaining ?? m.limit - (m.used ?? 0)) <= 0) ?? [];
+      const empty = (backendId ? usage[backendId]?.meters : undefined)?.filter((m) => !m.group && m.limit !== undefined && (m.remaining ?? m.limit - (m.used ?? 0)) <= 0) ?? [];
+      // A terminal CLI's usage groups (agy) pause only their own models; `auto` belongs to none.
+      if (pool.api === "cli") {
+        const a = agyExhausted(backendId ? usage[backendId]?.meters : undefined, t.model, now, pool.pauseAtPercent ?? DEFAULT_PAUSE_AT_PERCENT);
+        if (a) current[`${pool.companyId}|${t.model}`] = a;
+        continue;
+      }
       const kind = t.model.endsWith(":free") ? "free" : "paid";
       const m = empty.find((e) => !e.appliesTo || e.appliesTo === kind);
       if (m) current[`${pool.companyId}|${t.model}`] = { until: m.resetAt, reason: `${m.label} used up` };

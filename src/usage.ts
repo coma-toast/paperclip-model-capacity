@@ -4,12 +4,13 @@ import { getJson, type EngineStages, type FetchFn } from "./probes/http.js";
 import { PROBES } from "./probes/index.js";
 import { catalogPrices, liteLlmPrices, openRouterPrices, type ModelPrice } from "./prices.js";
 import type { BilledCost } from "./billing.js";
+import { readAgyUsage, type AgyRun } from "./agyUsage.js";
 import { dayStart, readUpstreamLimit, type UpstreamLimit } from "./upstreamLimits.js";
 
 // One number a backend reports about its own use: money spent against a budget, or local slots busy.
 export interface UsageMeter {
   label: string;
-  unit: "usd" | "slots" | "requests";
+  unit: "usd" | "slots" | "requests" | "percent";
   used?: number;
   limit?: number;
   remaining?: number;
@@ -23,6 +24,8 @@ export interface UsageMeter {
   appliesTo?: "free" | "paid";
   // A short line shown under it, e.g. which upstream deployments it leaves out.
   detail?: string;
+  // percent meters (agy): the usage group it belongs to, so only that group's models pause on it.
+  group?: string;
 }
 
 // What a backend said about its use at sampledAt. GET-only, like the probes; nothing is ever spent to find out.
@@ -77,6 +80,8 @@ export interface UsageDeps {
   paperclipSpend?: () => Promise<PaperclipSpend | undefined>;
   now?: () => Date;
   timeoutMs?: number;
+  // Terminal CLI usage (agy): replaces the real command in tests.
+  runAgy?: AgyRun;
 }
 
 // cost_events has one row per run; a model id with "free" in it is a free model (OpenCode's end in "-free").
@@ -308,7 +313,9 @@ export const sampleUsage = async (backend: Backend, deps: UsageDeps): Promise<Ba
     else if (backend.type === "openrouter") sample = await openRouter(url || "https://openrouter.ai/api/v1", deps);
     else if (backend.type === "copilot") sample = await copilot(deps);
     else if (apiInfo(backend.type).group === "local") sample = await localSlots(backend, deps);
-    else if (backend.type === "opencode") {
+    else if (backend.type === "cli" && backend.adapterType === "agy_local") {
+      sample = { meters: await readAgyUsage(backend.command, { now: deps.now, run: deps.runAgy }), notes: [], source: `${backend.command?.trim() || "agy"} -p "/usage"` };
+    } else if (backend.type === "opencode") {
       // With a personal key, the Console reports the workspace's spend and requests. Without one (free models need no
       // key at all), the meters count Paperclip's own runs. Its free limit isn't published; a run that hits it pauses
       // the free models until it resets.
@@ -335,6 +342,7 @@ export const sampleUsage = async (backend: Backend, deps: UsageDeps): Promise<Ba
     return { ...base, ok: true, ...sample };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
+    if (backend.type === "cli") return { ...base, ok: false, meters: [], notes: [], error: `usage unavailable: ${error}` };
     const hint = /returned 40[13]\b/.test(error) ? " (check the backend's API key)" : "";
     return { ...base, ok: false, meters: [], notes: [], error: `${error}${hint}` };
   }
