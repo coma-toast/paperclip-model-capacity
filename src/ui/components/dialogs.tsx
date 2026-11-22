@@ -402,7 +402,7 @@ export const PoolUsageDialog = ({ companyId, companyPrefix = null, pool, onClose
             <div key={b.id} style={{ display: "grid", gap: 4, padding: "8px 10px", border: BORDER, borderRadius: 8, fontSize: 13 }}>
               <strong>{b.name}</strong>
               {b.usage?.error ? <span style={{ color: "#ef4444" }}>{b.usage.error}</span> : null}
-              {(b.usage?.meters ?? []).map((m) => <span key={m.label}><span style={MUTED}>{m.label}: </span>{meterText(m)}{m.resetAt ? <span style={MUTED}> · resets {untilText(m.resetAt)}</span> : m.period ? <span style={MUTED}> · per {m.period}</span> : null}</span>)}
+              {(b.usage?.meters ?? []).map((m) => <span key={m.label}><span style={MUTED}>{m.label}: </span>{meterText(m)}{m.unit === "percent" ? null : m.resetAt ? <span style={MUTED}> · resets {untilText(m.resetAt)}</span> : m.period ? <span style={MUTED}> · per {m.period}</span> : null}</span>)}
               {(b.usage?.notes ?? []).map((n) => <span key={n} style={MUTED}>{n}</span>)}
               {b.usage?.sampledAt ? <span style={MUTED}>checked {new Date(b.usage.sampledAt).toLocaleTimeString()}</span> : null}
             </div>

@@ -33,6 +33,10 @@ const nextMidnightUtc = () => {
 
 
 export const meterText = (m: UsageMeter) => {
+  if (m.unit === "percent") {
+    const left = m.remaining ?? (m.used !== undefined ? 100 - m.used : undefined);
+    return `${left === undefined ? "?" : `${Math.round(left * 10) / 10}%`} left${m.resetAt ? ` · resets in ${untilText(m.resetAt)}` : ""}`;
+  }
   if (m.unit === "slots") return `${m.used ?? "?"} of ${m.limit ?? "?"} slot${m.limit === 1 ? "" : "s"} busy${m.derived ? " (Paperclip's runs)" : ""}`;
   if (m.unit === "requests" && m.limit === undefined) return `${m.used ?? "?"} used${m.detail ? ` · ${m.detail}` : ""}`;
   if (m.unit === "requests") return `${m.used ?? "?"} of ${m.limit ?? "?"} used · ${m.remaining ?? "?"} left`;
@@ -144,7 +148,7 @@ const cardsFor = (r: BackendUsageRow): UsageCardData[] => {
       byKind.slots.push({ label: "Slots", unit: "slots", used, limit, note, segments, ...(draining ? { draining } : {}) });
       continue;
     }
-    const kind: Kind = m.unit === "requests" ? "quota" : "money";
+    const kind: Kind = m.unit === "requests" || m.unit === "percent" ? "quota" : "money";
     const today = /today/i.test(m.label);
     byKind[kind].push({
       label: shortLabel(m.label), unit: m.unit, used: m.used, limit: m.limit, remaining: m.remaining,

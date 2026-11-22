@@ -1,0 +1,39 @@
+{
+  "conversation_id": "00000000-0000-0000-0000-000000000000",
+  "status": "SUCCESS",
+  "response": "Group\tBucket\tRemaining\tResets\nGemini Models\tWeekly Limit Remaining\t83.17%\t2026-11-28T13:35:47Z\n",
+  "duration_seconds": 1.2,
+  "num_turns": 0,
+  "usage": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 },
+  "command": {
+    "name": "usage",
+    "data": {
+      "description": "Model usage limits",
+      "groups": [
+        {
+          "name": "Gemini Models",
+          "description": "Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Gemini 3.8 Flash",
+          "buckets": [
+            { "id": "gemini-weekly", "name": "Weekly Limit Remaining", "description": "Weekly limit", "window": "weekly", "remaining_fraction": 0.8317, "reset_time": "2026-11-28T13:35:47Z" },
+            { "id": "gemini-5h", "name": "Five Hour Limit Remaining", "description": "Five hour limit", "window": "5h", "remaining_fraction": 0.8753, "reset_time": "2026-11-22T06:24:39Z" }
+          ]
+        },
+        {
+          "name": "Claude and GPT models",
+          "description": "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+          "buckets": [
+            { "id": "3p-weekly", "name": "Weekly Limit Remaining", "description": "Weekly limit", "window": "weekly", "remaining_fraction": 0.00255, "reset_time": "2026-11-25T15:02:43Z" },
+            { "id": "3p-5h", "name": "Five Hour Limit Remaining", "description": "Five hour limit", "window": "5h", "remaining_fraction": 1, "reset_time": "2026-11-22T07:00:00Z" }
+          ]
+        },
+        {
+          "name": "Gemini 4 Argon",
+          "description": "Models within this group: Gemini 4 Argon",
+          "buckets": [
+            { "id": "gemini-argon-wtu-weekly", "name": "Gemini 4 Argon Weekly Limit", "description": "Weekly limit", "window": "weekly", "remaining_fraction": 1, "reset_time": "2026-11-28T00:00:00Z" }
+          ]
+        }
+      ]
+    }
+  }
+}
