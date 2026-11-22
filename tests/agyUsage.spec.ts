@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AGY_CACHE_MS, agyExhausted, agyModelGroup, clearAgyCache, parseAgyUsage, readAgyUsage } from "../src/agyUsage.js";
+import { AGY_CACHE_MS, agyEnv, agyExhausted, agyModelGroup, clearAgyCache, parseAgyUsage, readAgyUsage } from "../src/agyUsage.js";
 import { meterText } from "../src/ui/components/usage.js";
 import { sampleUsage } from "../src/usage.js";
 
@@ -102,5 +102,16 @@ describe("agy model groups and pausing", () => {
   it("ignores a bucket that has already reset", () => {
     const meters = parseAgyUsage(FIXTURE);
     expect(agyExhausted(meters, "claude-sonnet-5-5", new Date("2026-11-26T00:00:00Z"), 90)).toBeUndefined();
+  });
+});
+
+describe("agyEnv", () => {
+  it("adds the account home when the worker has no HOME", () => {
+    expect(agyEnv({ PATH: "/bin" }, () => "/home/paperclip")).toEqual({ PATH: "/bin", HOME: "/home/paperclip" });
+    expect(agyEnv({ HOME: "" }, () => "/home/paperclip").HOME).toBe("/home/paperclip");
+  });
+  it("keeps a HOME that is set", () => {
+    const env = { HOME: "/x", PATH: "/bin" };
+    expect(agyEnv(env, () => "/home/paperclip")).toBe(env);
   });
 });
