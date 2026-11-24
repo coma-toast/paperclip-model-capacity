@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 import type { UsageMeter } from "./usage.js";
 
@@ -13,10 +13,14 @@ export const DEFAULT_AGY_COMMAND = "agy";
 
 export type AgyRun = (command: string, args: string[], timeoutMs: number) => Promise<string>;
 
+// The Paperclip worker can start without HOME, and agy then fails ("getting home directory: $HOME is not defined"), so
+// give it one: the worker's own HOME if set, else the account's home from the passwd entry.
+export const agyEnv = (env: NodeJS.ProcessEnv = process.env, home: () => string = homedir): NodeJS.ProcessEnv => (env.HOME ? env : { ...env, HOME: home() });
+
 export const runAgy: AgyRun = (command, args, timeoutMs) =>
   new Promise((resolve, reject) => {
     // Run from the temp dir: agy asks to trust the working folder, and the worker's own folder isn't one it knows.
-    execFile(command, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, cwd: tmpdir(), windowsHide: true }, (err, stdout, stderr) => {
+    execFile(command, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, cwd: tmpdir(), env: agyEnv(), windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const e = err as NodeJS.ErrnoException & { killed?: boolean };
         const why = e.code === "ENOENT" ? `${command} not found on the worker's PATH` : e.killed ? `timed out after ${timeoutMs / 1000} s` : (stderr || e.message).trim().split("\n")[0];
