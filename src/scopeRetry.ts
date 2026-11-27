@@ -1,5 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 
+import { waitForQuiet } from "./inFlight.js";
+
 // Paperclip 2026.1110+ ties every worker→host call to the host call (invocation) it was made in. Two kinds of our
 // calls get "Missing or unknown invocation scope":
 // - background work (timers, debounced cycles) that calls the host while some other invocation is running: a call
@@ -47,15 +49,29 @@ export const withScopeRetry = async <T>(fn: () => Promise<T>, delays: readonly n
 // Wraps the plugin context so every host call that returns a promise retries on a scope refusal. Nested namespaces
 // (ctx.issues.relations) are wrapped too; registration calls (ctx.data.register, ctx.events.on) pass through as they
 // return no promise. Functions keep their `this`.
-export const scopeRetryContext = <C extends object>(ctx: C, delays: readonly number[] = RETRY_DELAYS_MS): C => {
+// Host calls that name no company, which 1127 refuses while a request of the plugin is in flight: made from the
+// background, they wait for a quiet moment first (inFlight.ts), and the retry stays as the fallback.
+export const COMPANY_LESS = new Set(["http.fetch", "db.query", "db.execute", "companies.list"]);
+
+export const scopeRetryContext = <C extends object>(ctx: C, delays: readonly number[] = RETRY_DELAYS_MS, quiet: () => Promise<void> = waitForQuiet): C => {
   const cache = new WeakMap<object, unknown>();
-  const wrap = (target: object): unknown => {
+  const wrap = (target: object, path = ""): unknown => {
     const hit = cache.get(target);
     if (hit) return hit;
     const proxy = new Proxy(target, {
       get(obj, key) {
         const value = Reflect.get(obj, key);
         if (typeof value === "function") {
+          const here = path ? `${path}.${String(key)}` : String(key);
+          if (COMPANY_LESS.has(here)) {
+            return async (...args: unknown[]) => {
+              await quiet();
+              const first = value.apply(obj, args);
+              if (!(first instanceof Promise)) return first;
+              let used = false;
+              return withScopeRetry(() => (used ? value.apply(obj, args) : ((used = true), first)), delays);
+            };
+          }
           return (...args: unknown[]) => {
             const first = value.apply(obj, args);
             if (!(first instanceof Promise)) return first;
@@ -64,7 +80,7 @@ export const scopeRetryContext = <C extends object>(ctx: C, delays: readonly num
             return withScopeRetry(() => (used ? value.apply(obj, args) : ((used = true), first)), delays);
           };
         }
-        if (value && typeof value === "object" && !Array.isArray(value)) return wrap(value);
+        if (value && typeof value === "object" && !Array.isArray(value)) return wrap(value, path ? `${path}.${String(key)}` : String(key));
         return value;
       },
     });

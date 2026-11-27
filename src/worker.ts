@@ -5,16 +5,36 @@ import { registerApi } from "./api.js";
 import manifest from "./manifest.js";
 import { authorizeMetricsRequest, collectMetrics } from "./metrics.js";
 import { createRuntime, type Runtime } from "./runtime.js";
+import { trackedContext, trackRequest } from "./inFlight.js";
 import { scopeRetryContext } from "./scopeRetry.js";
 
 const CONFIG_KEYS = Object.keys(manifest.instanceConfigSchema?.properties ?? {});
 let runtime: Runtime | undefined;
 let pluginCtx: PluginContext | undefined;
 
+const handleApiRequest = async (input: PluginApiRequestInput): Promise<PluginApiResponse> => {
+  if (input.routeKey === "metrics" || input.path === "/metrics") {
+    if (!runtime || !pluginCtx) {
+      return { status: 503, headers: { "content-type": "application/json" }, body: { error: "Plugin worker runtime is not initialized" } };
+    }
+    const auth = await authorizeMetricsRequest(pluginCtx, input);
+    if (!auth.authorized) {
+      return { status: 401, headers: { "content-type": "application/json" }, body: { error: auth.reason ?? "Unauthorized" } };
+    }
+    const text = await collectMetrics(runtime, input.companyId);
+    return {
+      status: 200,
+      headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+      body: text,
+    };
+  }
+  return { status: 404, headers: { "content-type": "application/json" }, body: { error: "Route not found" } };
+};
+
 const plugin = definePlugin({
   async setup(rawCtx) {
     // Paperclip 2026.1110+ refuses some background host calls for invocation scope; they're retried (scopeRetry.ts).
-    const ctx = scopeRetryContext(rawCtx);
+    const ctx = scopeRetryContext(trackedContext(rawCtx));
     pluginCtx = ctx;
     runtime = createRuntime(ctx);
     runtime.start();
@@ -22,24 +42,8 @@ const plugin = definePlugin({
     ctx.data.register("health", async () => ({ status: "ok", ...runtime?.health(), checkedAt: new Date().toISOString() }));
   },
 
-  async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (input.routeKey === "metrics" || input.path === "/metrics") {
-      if (!runtime || !pluginCtx) {
-        return { status: 503, headers: { "content-type": "application/json" }, body: { error: "Plugin worker runtime is not initialized" } };
-      }
-      const auth = await authorizeMetricsRequest(pluginCtx, input);
-      if (!auth.authorized) {
-        return { status: 401, headers: { "content-type": "application/json" }, body: { error: auth.reason ?? "Unauthorized" } };
-      }
-      const text = await collectMetrics(runtime, input.companyId);
-      return {
-        status: 200,
-        headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
-        body: text,
-      };
-    }
-    return { status: 404, headers: { "content-type": "application/json" }, body: { error: "Route not found" } };
-  },
+  // Counted as a request while it runs (inFlight.ts).
+  onApiRequest: (input: PluginApiRequestInput): Promise<PluginApiResponse> => trackRequest(() => handleApiRequest(input)),
 
   async onHealth() {
     const h = runtime?.health();
