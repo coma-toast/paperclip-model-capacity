@@ -553,6 +553,8 @@ export const buildSnapshot = async ({ ctx, store, agents, readRuns, readFailures
     subscriptionLeft: await subscriptionLeftOf(store, pools, now),
     // Placements are the plugin's own overrides within one pool (overflow ones move a task between pools).
     placements: Object.fromEntries(Object.values(overrides).filter((o) => o.fromPoolId === o.toPoolId).map((o) => [o.issueId, o.model])),
+    // The moves between pools, kept whole so a finished run's original override can be put back exactly (D3).
+    overflowOverrides: Object.fromEntries(Object.entries(overrides).filter(([, o]) => o.fromPoolId !== o.toPoolId)),
     exhausted: await exhaustedModels({ store, pools, backendsFor, failures, issuesById, agentsByCompany, now }),
     adapterModels: await adapterModelsOf(store, pools),
     cannotRun: await learnCannotRun({ store, failures, issuesById, agentsByCompany, now }),

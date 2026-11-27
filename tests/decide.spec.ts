@@ -215,7 +215,7 @@ describe("mode and alerts", () => {
     expect(kinds(a, "alert").map((x) => (x.kind === "alert" ? [x.alert.kind, x.alert.subject] : []))).toEqual([["waitedTooLong", "old"]]);
   });
 
-  it("returns no overflow actions before P2", () => {
+  it("overflows nothing for a pool with no overflow list (overflow is per pool)", () => {
     expect(kinds(decide(snapshot({ pools: [pool("gpu", { limit: 0 })], tasks: [task("t1")] })), "overflow")).toEqual([]);
   });
 });
