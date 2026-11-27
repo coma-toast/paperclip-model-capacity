@@ -58,6 +58,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     const value = (await ctx.config.get(companyId))[key];
     return typeof value === "string" && value ? value : undefined;
   };
+  const webhookUrl = async (companyId: string) => configId(companyId, "webhookUrl");
   const backendAuth = createBackendAuth(ctx, Date.now, opencodeCopilotToken);
   const backendsFor = async (companyId: string) => readBackends(await ctx.config.get(companyId));
   // Hosts in the scheduler's list carry "<companyId>:<id>" ids; their key belongs to their backend in that company.
@@ -72,7 +73,7 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     const used = await Promise.all(all.map(async (c) => (await store.companyPools(c.id).get()).length > 0));
     return all.filter((_, i) => used[i]);
   };
-  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId"), listCompanies: companiesWithPools });
+  const alerter = createAlerter({ ctx, store, alertIssueId: (companyId) => configId(companyId, "alertIssueId"), listCompanies: companiesWithPools, webhookUrl });
   const pluginError = (state: "start" | "clear", message: string): AlertEvent =>
     ({ kind: "pluginError", subject: "cycle", state, message, at: now().toISOString() });
   let chain: Promise<void> = Promise.resolve();

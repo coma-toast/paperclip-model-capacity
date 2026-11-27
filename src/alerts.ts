@@ -31,11 +31,13 @@ export interface AlerterDeps {
   // Companies an instance-wide alert goes to. Defaults to companies.list, which the host refuses from timer work, so
   // the worker passes its saved company list.
   listCompanies?: () => Promise<{ id: string }[]>;
+  // Optional webhook URL for external alert integrations.
+  webhookUrl?: (companyId: string) => Promise<string | undefined>;
 }
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export const createAlerter = ({ ctx, store, alertIssueId = async () => undefined, listCompanies }: AlerterDeps) => {
+export const createAlerter = ({ ctx, store, alertIssueId = async () => undefined, listCompanies, webhookUrl }: AlerterDeps) => {
   // An instance-wide alert (a host, an instance pool) goes to every company's channels.
   const companiesFor = async (e: AlertEvent) =>
     e.companyId ? [e.companyId] : (await (listCompanies ?? (() => ctx.companies.list({ limit: 200 })))()).map((c) => c.id);
@@ -54,6 +56,36 @@ export const createAlerter = ({ ctx, store, alertIssueId = async () => undefined
           continue;
         }
         await ctx.issues.createComment(issueId, text, companyId);
+        const url = await webhookUrl?.(companyId);
+        if (url) {
+          const payload = {
+            kind: e.kind,
+            state: e.state,
+            poolId: e.poolId,
+            hostId: e.hostId,
+            issueIdentifier: e.issueIdentifier,
+            counts: e.counts,
+            at: e.at
+          };
+          let attempt = 0;
+          const maxAttempts = 2;
+          while (attempt < maxAttempts) {
+            try {
+              await ctx.http.fetch(url, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(5000),
+              });
+              break;
+            } catch (err) {
+              attempt++;
+              if (attempt >= maxAttempts) {
+                ctx.logger.warn("Webhook delivery failed after retry", { companyId, kind: e.kind, error: errText(err) });
+              }
+            }
+          }
+        }
       } catch (err) {
         ctx.logger.warn("Alert delivery failed", { companyId, kind: e.kind, error: errText(err) });
       }

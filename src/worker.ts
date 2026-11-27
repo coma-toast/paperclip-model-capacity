@@ -27,6 +27,10 @@ const plugin = definePlugin({
       if (!CONFIG_KEYS.includes(key)) errors.push(`${key}: unknown setting`);
       else if (key === "backends") {
         if (value !== undefined && value !== null && !Array.isArray(value)) errors.push("backends: must be a list");
+      } else if (key === "webhookUrl") {
+        if (typeof value === "string" && value !== "") {
+          try { new URL(value); } catch { errors.push("webhookUrl: must be a valid URL"); }
+        }
       } else if (value !== undefined && value !== null && typeof value !== "string") errors.push(`${key}: must be a text id`);
     }
     return errors.length ? { ok: false, errors } : { ok: true };

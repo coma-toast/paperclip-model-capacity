@@ -49,13 +49,14 @@ const manifest: PaperclipPluginManifestV1 = {
   database: { migrationsDir: "migrations", coreReadTables: ["heartbeat_runs", "cost_events"] },
   instanceConfigSchema: {
     type: "object",
-    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. Backends and pools are set on Company settings → Model capacity. The two settings here are optional: how held tasks are labelled and where alerts are posted.",
+    description: "Pools, limits and model servers are set per company under Company settings → Model capacity. Backends and pools are set on Company settings → Model capacity. The four settings here are optional: how held tasks are labelled, where alerts are posted, the webhook sink for external integrations, and the board token for quota limits.",
     additionalProperties: false,
     properties: {
       queueLabelId: { type: "string", title: "Queue label", description: "Existing label added to held tasks (optional)." },
       alertIssueId: { type: "string", title: "Alert task", description: "Unassigned standing task that gets alert comments (optional)." },
+      webhookUrl: { type: "string", title: "Webhook sink URL", description: "Optional. A URL where alert events are POSTed as JSON with shape {kind, state, poolId, hostId?, issueIdentifier?, counts?, at}. Used for external integrations; never task content or secrets." },
       quotaToken: { format: "secret-ref", title: "Board token for subscription quotas", description: "Optional. Lets the plugin read this company's Claude and ChatGPT subscription windows (board-only in Paperclip), so a subscription pool pauses when a window reaches 100%, and switch agents between Claude Code and Codex in a switching pool." },
-      paperclipUrl: { type: "string", title: "Paperclip address", description: "Where the plugin reaches Paperclip's API with the board token. Paperclip blocks plugin requests to private addresses such as 127.0.0.1, so use its tailnet or public address (e.g. https://paperclip.example.ts.net)." },
+      paperclipUrl: { type: "string", title: "Paperclip address", description: "Where the plugin reaches Paperclip's API with the board token. Paperclip blocks plugin requests to private addresses such as [IPV4_REDACTED], so use its tailnet or public address (e.g. https://paperclip.example.ts.net)." },
       ...backendsConfigSchema,
     },
   },

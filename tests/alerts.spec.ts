@@ -158,6 +158,77 @@ describe("worker integration", () => {
   });
 });
 
+describe("webhook sink", () => {
+  it("POSTs the alert JSON payload with correct shape", async () => {
+    const captured: Array<{ url: string; init?: RequestInit }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      captured.push({ url: String(url), init });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const harness = createTestHarness({ manifest, capabilities: CAPS });
+      harness.seed({
+        companies: [company("c1")],
+        issues: [issue("alerts-c1", "c1")],
+      });
+      const store = createStore(harness.ctx.state);
+      const webhookAlerter = createAlerter({
+        ctx: harness.ctx,
+        store,
+        alertIssueId: async () => "alerts-c1",
+        webhookUrl: async () => "https://example.com/hooks/webhook",
+      });
+      await webhookAlerter.apply([ev("hostDown", "h1")]);
+      expect(captured).toHaveLength(1);
+      expect(captured[0].init?.method).toBe("POST");
+      expect(captured[0].init?.headers).toEqual({ "content-type": "application/json" });
+      const payload = JSON.parse(
+        String(captured[0].init?.body)
+      ) as Record<string, unknown>;
+      expect(payload).toEqual({
+        kind: "hostDown",
+        state: "start",
+        poolId: undefined,
+        hostId: undefined,
+        issueIdentifier: undefined,
+        counts: undefined,
+        at: NOW,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retries the webhook once when the first attempt fails", async () => {
+    let attempts = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("network down");
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const harness = createTestHarness({ manifest, capabilities: CAPS });
+      harness.seed({
+        companies: [company("c1")],
+        issues: [issue("alerts-c1", "c1")],
+      });
+      const store = createStore(harness.ctx.state);
+      const webhookAlerter = createAlerter({
+        ctx: harness.ctx,
+        store,
+        alertIssueId: async () => "alerts-c1",
+        webhookUrl: async () => "https://example.com/hooks/webhook",
+      });
+      await webhookAlerter.apply([ev("hostDown", "h1")]);
+      expect(attempts).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("alertText", () => {
   it("formats start and clear", () => {
     expect(alertText(ev("pluginError", "cycle", "start", { message: "A capacity cycle failed" }))).toBe("⚠️ Model capacity plugin error: A capacity cycle failed");

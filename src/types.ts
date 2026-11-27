@@ -294,6 +294,9 @@ export interface AlertEvent {
   at: string;
   poolId?: string;
   companyId?: string;
+  hostId?: string;
+  issueIdentifier?: string;
+  counts?: Record<string, number>;
 }
 
 // Why a task was put on an engine: first placement, its parent's engine, or its own engine was down too long.
