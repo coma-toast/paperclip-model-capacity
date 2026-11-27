@@ -16,6 +16,8 @@ import { reachCandidates } from "./reach.js";
 import { fetchProxyRoutes } from "./routes.js";
 import { decide } from "./scheduler/decide.js";
 import { buildSnapshot, countRuns, createAgentCache, createBlockerCache, createCompanyDirectory, dbRunReader, type FailureReader, type RunReader } from "./snapshot.js";
+import { detached } from "./scopeRetry.js";
+import { companyScopedState } from "./state/companyScoped.js";
 import { createStore } from "./state/store.js";
 import type { AlertEvent, HostConfig, Snapshot } from "./types.js";
 import { opencodeCopilotToken } from "./opencodeAuth.js";
@@ -28,6 +30,8 @@ const BILLED_CACHE_MS = 30 * 60_000;
 const ADAPTER_MODELS_EVERY_MS = 5 * 60_000;
 
 export interface RuntimeOptions {
+  // false keeps state in the instance scope (tests that read it back through the harness).
+  scopedState?: boolean;
   debounceMs?: number;
   // 0 turns the probe loop off (tests).
   probeIntervalMs?: number;
@@ -55,8 +59,23 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => {
   const now = opts.now ?? (() => new Date());
-  const store = createStore(ctx.state);
+  // State goes under a configured company's scope, outside any host request: see state/companyScoped.ts. Its anchor
+  // company comes from the companies the plugin saved earlier, else from the host's list.
+  // Companies seen in events are admitted without asking the host to list them, which a busy host refuses.
+  const eventCompanies = new Set<string>();
+  const store = createStore(opts.scopedState === false ? ctx.state : companyScopedState(ctx.state, async () => {
+    if (eventCompanies.size) return [...eventCompanies];
+    const saved = await detached(() => ctx.state.get({ scopeKind: "instance", stateKey: "companies" })).catch(() => undefined);
+    const ids = (Array.isArray(saved) ? saved : ((saved as { data?: unknown } | null | undefined)?.data as unknown[] | undefined) ?? [])
+      .map((c) => (c as { id?: unknown })?.id).filter((id): id is string => typeof id === "string");
+    if (ids.length) return ids;
+    return (await ctx.companies.list({ limit: 100, offset: 0 })).map((c) => c.id);
+  }));
   const companies = createCompanyDirectory(ctx, store);
+  const noteEventCompany = (companyId: string | undefined) => {
+    if (companyId) eventCompanies.add(companyId);
+    return companies.noteFromEvent(companyId);
+  };
   const agents = createAgentCache(ctx);
   const blockers = createBlockerCache(ctx);
   const readRuns = opts.readRuns ?? dbRunReader(ctx);
@@ -365,17 +384,17 @@ export const createRuntime = (ctx: PluginContext, opts: RuntimeOptions = {}) => 
     });
     for (const type of ["agent.run.started", "agent.run.finished", "agent.run.failed", "agent.run.cancelled"] as const) {
       ctx.events.on(type, async (event) => {
-        await companies.noteFromEvent(event.companyId);
+        await noteEventCompany(event.companyId);
         schedule(type);
       });
     }
     ctx.events.on("issue.updated", async (event) => {
-      await companies.noteFromEvent(event.companyId);
+      await noteEventCompany(event.companyId);
       schedule("issue.updated");
     });
     ctx.events.on("agent.updated", async (event) => {
       agents.invalidate(event.companyId);
-      await companies.noteFromEvent(event.companyId);
+      await noteEventCompany(event.companyId);
       schedule("agent.updated");
     });
     const interval = opts.probeIntervalMs ?? DEFAULT_PROBE_INTERVAL_MS;

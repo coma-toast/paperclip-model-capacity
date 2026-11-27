@@ -9,7 +9,7 @@ import { AsyncResource } from "node:async_hooks";
 // So a refused call is retried outside any invocation context, with a short backoff.
 
 // Bound at module load, before any invocation exists: runs a function in that empty async context.
-const detached = AsyncResource.bind(<T>(fn: () => T): T => fn());
+export const detached = AsyncResource.bind(<T>(fn: () => T): T => fn());
 
 const SCOPE_DENIED = -32005;
 export const isScopeDenied = (e: unknown) => {
