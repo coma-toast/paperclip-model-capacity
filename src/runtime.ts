@@ -52,7 +52,8 @@ export interface RuntimeOptions {
 // allows for the plugin's configured companies.
 const outsideInvocation = AsyncLocalStorage.snapshot();
 
-const CYCLE_TIMEOUT_MS = 3 * 60_000;
+// Long enough for a cycle's host calls to ride out a minute of refusals each (scopeRetry) without being abandoned.
+const CYCLE_TIMEOUT_MS = 8 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));

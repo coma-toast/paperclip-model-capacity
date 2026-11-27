@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it } from "vitest";
 
-import { isScopeDenied, scopeRetryContext, withScopeRetry } from "../src/scopeRetry.js";
+import { RETRY_DELAYS_MS, isScopeDenied, jittered, scopeRetryContext, withScopeRetry } from "../src/scopeRetry.js";
 
 const denied = () => Object.assign(new Error("Missing or unknown invocation scope"), { code: -32005 });
 
@@ -43,5 +43,15 @@ describe("invocation-scope retry", () => {
     expect(tries).toBe(2);
     wrapped.data.register("health");
     expect(ctx.data.registered).toEqual(["health"]);
+  });
+});
+
+describe("retry schedule", () => {
+  it("waits about a minute in all, spread by +-25 %", () => {
+    expect(RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(55_000);
+    expect(RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(65_000);
+    expect(jittered(10_000, () => 0)).toBe(7500);
+    expect(jittered(10_000, () => 1)).toBe(12_500);
+    expect(jittered(10_000, () => 0.5)).toBe(10_000);
   });
 });

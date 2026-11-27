@@ -17,7 +17,11 @@ export const isScopeDenied = (e: unknown) => {
   return err?.code === SCOPE_DENIED || (typeof err?.message === "string" && err.message.includes("Missing or unknown invocation scope"));
 };
 
-export const RETRY_DELAYS_MS = [50, 150, 400, 1000, 2000, 4000, 8000];
+// About a minute in all (Paperclip 1127: while the plugin has any request in flight, a call naming no company is
+// refused, and on a busy host that lasts a long time). Each wait is spread over +-25 % so the cycle's parallel calls
+// don't retry in step.
+export const RETRY_DELAYS_MS = [50, 150, 400, 1000, 2000, 4000, 8000, 10_000, 12_000, 15_000, 8000];
+export const jittered = (ms: number, random: () => number = Math.random) => Math.round(ms * (0.75 + random() * 0.5));
 const sleep = (ms: number) => new Promise<void>((resolve) => detached(() => setTimeout(resolve, ms)));
 
 // Calls fn; on a scope refusal, calls it again outside any invocation, backing off between attempts.
@@ -28,7 +32,7 @@ export const withScopeRetry = async <T>(fn: () => Promise<T>, delays: readonly n
     if (!isScopeDenied(e)) throw e;
     let last: unknown = e;
     for (const ms of delays) {
-      await sleep(ms);
+      await sleep(jittered(ms));
       try {
         return await detached(fn);
       } catch (again) {
