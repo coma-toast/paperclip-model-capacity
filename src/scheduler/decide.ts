@@ -1,6 +1,6 @@
 import { OPEN_TASK_STATUSES, PRIORITY_RANK, VIRTUAL_MODEL_PREFIX, virtualModel } from "../constants.js";
-import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canAgentRun, canRun, cannotRunKey, type RunLimits } from "./model.js";
-import { occupiesSlot, type Action, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
+import { ADAPTER_PROVIDER, PROVIDER_ADAPTER, canAgentRun, canRun, cannotRunKey, poolAcceptsAdapter, type RunLimits } from "./model.js";
+import { occupiesSlot, type Action, type OverflowReason, type HeldTask, type OpenTask, type PlaceReason, type PlacementTarget, type PoolConfig, type Snapshot, type TaskPriority } from "../types.js";
 
 interface Group {
   key: string;
@@ -241,8 +241,105 @@ const stickyActions = (input: {
   return out;
 };
 
-// P2 adds overflow (D1). Until then held tasks only queue.
-const overflowActions = (): Action[] => [];
+// D1: a held task leaves a pool that can't run it for the first pool on its overflow list that takes the task and has a
+// slot. The pool's own triggers fire the move: no host of it is up (E3), `immediately` is on, or the task has waited past
+// `afterMinutes` — with none of them on, held tasks only queue. A person's pin never leaves its pool (D4), and a pool an
+// operator holds or disables releases nothing, so it overflows nothing either. A task the pool could run this cycle, or whose
+// last wake-up started no run, doesn't move.
+// Privacy is the PRD's A10: private work never moves to a shared pool, while shared work may join a private one.
+// The model comes from the target pool the way placement picks one (its overflow model, else a placement target its
+// agent can run and that is free, so an engine target still gets an up engine and a quota target a model with quota
+// left, else the pool's own name for a pool that keeps names, else one of its patterns). A pool takes at most its own
+// free slots of overflowed tasks in one cycle.
+const overflowActions = (input: {
+  snapshot: Snapshot;
+  now: Date;
+  scopes: { pool: PoolConfig; queue: QueueEntry[]; tasks: OpenTask[] }[];
+  // Issue ids the pool gave a run slot to this cycle: the task can run where it is, so it doesn't move. A task it
+  // only placed (a model inside the pool, still no room) keeps waiting, and may still go elsewhere after the wait.
+  taken: Set<string>;
+  runsPerPool: Map<string, number>;
+}): Action[] => {
+  const { snapshot, now, scopes, taken, runsPerPool } = input;
+  const heldPools = new Set(snapshot.heldPools);
+  const limits: RunLimits = { adapterModels: snapshot.adapterModels, cannotRun: snapshot.cannotRun };
+  // Room in each target pool, the way the main loop measures a pool: its capacity less what already sits on it
+  // (runs holding a slot, plus released tasks whose run hasn't shown up), and less the tasks overflowing into it this cycle.
+  const runIssues = new Set(snapshot.runs.map((r) => r.issueId));
+  const usedOn = (p: PoolConfig) => snapshot.runs.filter((r) => r.poolId === p.id && occupiesSlot(r)).length
+    + snapshot.released.filter((r) => r.poolId === p.id && !runIssues.has(r.issueId)).length;
+  const room = new Map<string, number>();
+  const freeIn = (p: PoolConfig) => room.get(p.id) ?? Math.max(0, availableCapacity(p, snapshot, runsPerPool.get(p.id) ?? 0) - usedOn(p));
+  const exhausted = (p: PoolConfig, model: string) => snapshot.exhausted?.[`${p.companyId ?? ""}|${model}`];
+  // Whether a pool takes this task: privacy allows the move, the task's company may use the pool, the pool takes its
+  // agent's adapter at all, and the pool isn't disabled (a disabled pool keeps work out).
+  const takes = (from: PoolConfig, to: PoolConfig, t: OpenTask) =>
+    !(from.privacy === "private" && to.privacy === "shared")
+    && (!to.companyId || to.companyId === t.companyId)
+    && companyAllowed(to, t.companyId)
+    && poolAcceptsAdapter(to, t.adapterType)
+    && !to.disabled;
+  // The model a task gets on the target pool, chosen the way placement chooses one.
+  const modelFor = (t: OpenTask, p: PoolConfig) => {
+    const runs = (m: string | undefined) => m !== undefined && canAgentRun({ agentId: t.agentId, adapterType: t.adapterType }, m, limits);
+    if (runs(p.overflowModel)) return p.overflowModel;
+    const targets = p.placement ?? [];
+    const open = (x: PlacementTarget) => (x.hostId ? Boolean(snapshot.hosts[x.hostId]?.up) : !exhausted(p, x.model));
+    return targets.find((x) => runs(x.model) && open(x))?.model
+      ?? (runs(p.agentModel) ? p.agentModel : undefined) ?? p.patterns.find((m) => runs(m) && !m.includes("*"));
+  };
+  // The first pool on the overflow list that takes the task and has a slot and a model for it.
+  const firstTarget = (from: PoolConfig, t: OpenTask, ids: string[]) => {
+    for (const id of ids) {
+      const p = snapshot.pools.find((x) => (x.id === id || x.localId === id) && takes(from, x, t));
+      const model = p ? modelFor(t, p) : undefined;
+      if (p && model !== undefined && freeIn(p) > 0) return { pool: p, model };
+    }
+    return undefined;
+  };
+  const out: Action[] = [];
+  for (const scope of scopes) {
+    const { pool, queue, tasks } = scope;
+    const overflow = pool.overflow;
+    if (!overflow?.pools?.length || heldPools.has(pool.id) || pool.disabled) continue;
+    const tasksById = new Map(tasks.map((t) => [t.issueId, t]));
+    // E3: a pool with no host up can run nothing, so its whole queue may go elsewhere.
+    const hostsDown = overflow.whenHostsDown && !anyHostUp(pool, snapshot);
+    for (const entry of queue) {
+      const t = tasksById.get(entry.issueId);
+      if (!t || t.pinned || taken.has(t.issueId) || snapshot.wakeCooldown?.[t.issueId]) continue;
+      let reason: OverflowReason | undefined;
+      if (hostsDown) reason = "hostsDown";
+      else if (overflow.immediately) reason = "immediate";
+      else if (overflow.afterMinutes !== undefined && minutesSince(entry.heldAt, now) > overflow.afterMinutes) reason = "waited";
+      if (!reason) continue;
+      const hit = firstTarget(pool, t, overflow.pools);
+      if (!hit) continue;
+      room.set(hit.pool.id, freeIn(hit.pool) - 1);
+      out.push({ kind: "overflow", issueId: t.issueId, companyId: t.companyId, fromPoolId: pool.id, toPoolId: hit.pool.id, model: hit.model, reason });
+    }
+  }
+  return out;
+};
+
+// D3: an override the plugin wrote to overflow a task is put back once that run is over (finished, failed or cancelled).
+// The snapshot only tells whether a run is going now, so a run counts as ended when the task is open with no run, no hold,
+// and no release of its own waiting for a run to appear. A model a person has since set is left alone (D4), and so is a
+// task that left the board. `original` null is the plugin's own first override, which comes off rather than a value.
+// The executor deletes the record as it restores, so a task is never restored twice.
+const restoreActions = (snapshot: Snapshot): Action[] => {
+  const tasksById = new Map(snapshot.tasks.map((t) => [t.issueId, t]));
+  const runIssues = new Set(snapshot.runs.map((r) => r.issueId));
+  const held = new Set(snapshot.holds.map((h) => h.issueId));
+  const awaitingRun = new Set(snapshot.released.filter((r) => !runIssues.has(r.issueId)).map((r) => r.issueId));
+  const out: Action[] = [];
+  for (const record of Object.values(snapshot.overflowOverrides ?? {})) {
+    const t = tasksById.get(record.issueId);
+    if (!t || t.pinned || held.has(t.issueId) || awaitingRun.has(t.issueId) || runIssues.has(t.issueId) || !OPEN.has(t.status)) continue;
+    out.push({ kind: "restore", issueId: t.issueId, companyId: t.companyId, original: record.original });
+  }
+  return out;
+};
 
 // Pure: the same snapshot always gives the same actions. Observe mode is the executor's concern (C6), so pool mode
 // doesn't change what is decided here.
@@ -303,6 +400,9 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
   for (const hold of snapshot.holds) groupFor(hold.poolId, hold.companyId);
 
   const actions: Action[] = [];
+  // Each pool's queue as the loop found it, so overflow can run over it afterwards (a task the pool released this cycle
+  // is already out of the queue, or in `taken` below for a sticky pool).
+  const overflowScopes: { pool: PoolConfig; queue: QueueEntry[]; tasks: OpenTask[] }[] = [];
   for (const group of groups.values()) {
     const { pool, key } = group;
     const count = counts.get(key) ?? 0;
@@ -326,6 +426,7 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
     const queue: QueueEntry[] = held
       .filter((h) => waiting.some((t) => t.issueId === h.issueId && !isExempt(t)))
       .map((h) => ({ issueId: h.issueId, companyId: h.companyId, priority: h.priority, heldAt: h.heldAt }));
+    overflowScopes.push({ pool, queue, tasks });
 
     if (count > available) {
       actions.push({
@@ -386,5 +487,8 @@ export const decide = (snapshot: Snapshot, now: Date = new Date(snapshot.now)): 
       },
     });
   }
-  return [...actions, ...overflowActions()];
+  // A task the pool gave a slot to this cycle runs where it is, so it doesn't leave the pool. A task it only placed
+  // (a model inside the pool, still no room) waits, and after the wait it may still go elsewhere.
+  const taken = new Set(actions.flatMap((a) => (a.kind === "release" ? [a.issueId] : [])));
+  return [...actions, ...restoreActions(snapshot), ...overflowActions({ snapshot, now, scopes: overflowScopes, taken, runsPerPool })];
 };

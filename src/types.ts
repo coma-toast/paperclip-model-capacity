@@ -257,6 +257,9 @@ export interface Snapshot {
   heldPools: string[];
   // Models the plugin placed tasks on (sticky pools), by issue id, so subtasks of a closed parent still follow it.
   placements?: Record<string, string>;
+  // Overrides the plugin wrote moving a task between pools (overflow), by issue id: so a run that has ended can have its
+  // original model put back (D3), and a person's model choice told from the plugin's (D4).
+  overflowOverrides?: Record<string, OverrideRecord>;
   // Models whose quota is used up, keyed "<companyId>|<model>": since when, until when (if the backend says), and why.
   exhausted?: Record<string, ExhaustedModel>;
   // Agents an operator exempted (F4): their tasks never wait but still count (B5). Task exemptions are on OpenTask.
