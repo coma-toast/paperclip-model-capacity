@@ -68,7 +68,8 @@ export const companyScopedState = (state: PluginStateClient, candidates: () => P
       const k = await scoped(key);
       const value = await detached(() => state.get(k));
       if (present(value) || !isInstance(key) || legacyChecked.has(key.stateKey)) return value;
-      const old = await detached(() => state.get(key));
+      // Not detached: inside a request this carries the request's own scope, which the host admits for instance state.
+      const old = await state.get(key);
       legacyChecked.add(key.stateKey);
       if (present(old)) await detached(() => state.set(k, old));
       return old;
@@ -82,7 +83,7 @@ export const companyScopedState = (state: PluginStateClient, candidates: () => P
       await detached(() => state.delete(k));
       // The old copy would otherwise come back on the next read of a deleted key.
       if (isInstance(key)) {
-        await detached(() => state.delete(key));
+        await state.delete(key);
         legacyChecked.add(key.stateKey);
       }
     },

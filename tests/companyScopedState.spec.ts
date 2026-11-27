@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it } from "vitest";
 import type { PluginStateClient, ScopeKey } from "@paperclipai/plugin-sdk";
 
@@ -8,6 +9,8 @@ const id = (k: ScopeKey) => `${k.scopeKind}|${"scopeId" in k ? k.scopeId : ""}|$
 
 // Applies Paperclip 1127's rule for a worker call made outside any invocation: while the plugin has a request in
 // flight (`busy`), a call naming no company is refused; a call naming a configured company is admitted.
+// A call made inside a request carries its id (the `request` store); instance state is admitted then, busy or not.
+const request = new AsyncLocalStorage<string>();
 const fakeHost = (configured: string[]) => {
   const rows = new Map<string, unknown>();
   const host = {
@@ -23,7 +26,7 @@ const fakeHost = (configured: string[]) => {
   const gate = (k: ScopeKey) => {
     if (k.scopeKind === "company") {
       if (!configured.includes(k.scopeId as string)) throw denied();
-    } else if (host.busy) throw denied();
+    } else if (host.busy && !request.getStore()) throw denied();
   };
   return host;
 };
@@ -76,6 +79,16 @@ describe("state under a company's scope (Paperclip 1127)", () => {
     host.calls.length = 0;
     expect(await state.get({ scopeKind: "instance", stateKey: "overrides" })).toEqual({ version: 1, data: { t: "n" } });
     expect(host.calls).toEqual(["get company|jd|overrides"]);
+  });
+
+  it("inside a request, the first look under the old scope works while the host is busy", async () => {
+    const host = fakeHost(["jd", "slide"]);
+    host.rows.set("instance||holds", { version: 1, data: { h: 1 } });
+    host.busy = true;
+    const state = companyScopedState(host.client, async () => ["jd"]);
+    const got = await request.run("req-1", () => state.get({ scopeKind: "instance", stateKey: "holds" }));
+    expect(got).toEqual({ version: 1, data: { h: 1 } });
+    expect(await request.run("req-1", () => state.get({ scopeKind: "instance", stateKey: "never" }))).toBeNull();
   });
 
   it("a deleted key doesn't come back from the old copy", async () => {
